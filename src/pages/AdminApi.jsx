@@ -1,0 +1,128 @@
+import React, { useState, useEffect } from 'react'
+import axios from 'axios'
+import { Skeleton, SkeletonCard } from '../components/Skeleton'
+import './AdminApi.css'
+
+export default function AdminApi() {
+  const [settings, setSettings] = useState({
+    base_url: '',
+    service: '',
+    operator: '',
+    country: '',
+    default_price: 6.99,
+  })
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    loadSettings()
+  }, [])
+
+  const loadSettings = async () => {
+    try {
+      const res = await axios.get('/api/admin/api-settings', { withCredentials: true })
+      setSettings(res.data.settings || settings)
+    } catch (err) {
+      console.error('Error loading API settings:', err)
+      setMessage('Failed to load API settings')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setSaving(true)
+    setMessage('')
+
+    try {
+      const res = await axios.post('/api/admin/api-settings', settings, {
+        withCredentials: true,
+      })
+      setSettings(res.data.settings || settings)
+      setMessage('API settings saved successfully')
+    } catch (err) {
+      setMessage(err.response?.data?.error || 'Failed to save API settings')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="admin-api-page">
+        <h2>API Settings</h2>
+        <SkeletonCard />
+      </div>
+    )
+  }
+
+  return (
+    <div className="admin-api-page">
+      <h2>API Settings</h2>
+      {message && (
+        <div className={message.toLowerCase().includes('success') ? 'success' : 'error'}>
+          {message}
+        </div>
+      )}
+      <form onSubmit={handleSubmit} className="api-form">
+        <div className="form-group">
+          <label>API Base URL:</label>
+          <input
+            type="text"
+            value={settings.base_url}
+            onChange={(e) => setSettings({ ...settings, base_url: e.target.value })}
+            required
+            disabled={saving}
+          />
+        </div>
+        <div className="form-group">
+          <label>Service Code:</label>
+          <input
+            type="text"
+            value={settings.service}
+            onChange={(e) => setSettings({ ...settings, service: e.target.value })}
+            required
+            disabled={saving}
+          />
+        </div>
+        <div className="form-group">
+          <label>Operator:</label>
+          <input
+            type="text"
+            value={settings.operator}
+            onChange={(e) => setSettings({ ...settings, operator: e.target.value })}
+            required
+            disabled={saving}
+          />
+        </div>
+        <div className="form-group">
+          <label>Country:</label>
+          <input
+            type="text"
+            value={settings.country}
+            onChange={(e) => setSettings({ ...settings, country: e.target.value })}
+            required
+            disabled={saving}
+          />
+        </div>
+        <div className="form-group">
+          <label>Default Price (₹):</label>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={settings.default_price}
+            onChange={(e) => setSettings({ ...settings, default_price: e.target.value })}
+            required
+            disabled={saving}
+          />
+        </div>
+        <button type="submit" disabled={saving}>
+          {saving ? 'Saving...' : 'Save API Settings'}
+        </button>
+      </form>
+    </div>
+  )
+}

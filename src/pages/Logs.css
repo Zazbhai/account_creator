@@ -1,0 +1,44 @@
+.logs-page h2 {
+  color: #333;
+  margin-bottom: 20px;
+}
+
+.log-container {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 20px;
+  border-radius: 8px;
+  max-height: 600px;
+  overflow-y: auto;
+  font-family: 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.log-line {
+  margin-bottom: 5px;
+  word-wrap: break-word;
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 600px) {
+  .logs-page h2 {
+    font-size: 1.4em;
+  }
+
+  .log-container {
+    padding: 12px;
+    font-size: 13px;
+  }
+}

@@ -1,0 +1,135 @@
+.layout {
+  width: 100%;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 20px;
+  padding: 30px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: fadeInUp 0.5s ease-out;
+  overflow-x: auto;
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30px;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.header h1 {
+  color: #333;
+  font-size: 2em;
+}
+
+.nav-links {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.nav-btn,
+.logout-btn {
+  padding: 8px 16px;
+  background: #e1b382;
+  color: #12343b;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  text-decoration: none;
+  display: inline-block;
+  transition: background 0.3s;
+  font-weight: 600;
+}
+
+.nav-btn:hover,
+.logout-btn:hover {
+  background: #c89666;
+}
+
+.nav-btn.active {
+  background: #c89666;
+  color: white;
+}
+
+.logout-btn {
+  background: #c89666;
+  color: white;
+}
+
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(255, 255, 255, 0.98);
+  padding: 10px;
+  display: flex;
+  justify-content: space-around;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+}
+
+.bottom-nav .link-btn {
+  padding: 10px 15px;
+  background: transparent;
+  color: #2d545e;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  text-decoration: none;
+  transition: background 0.3s;
+  font-weight: 600;
+}
+
+.bottom-nav .link-btn:hover {
+  background: #f0f0f0;
+}
+
+.bottom-nav .link-btn.active {
+  background: #e1b382;
+  color: #12343b;
+}
+
+@media (min-width: 769px) {
+  .bottom-nav {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .container {
+    margin: 10px;
+    padding: 16px;
+    border-radius: 12px;
+  }
+
+  .header h1 {
+    font-size: 1.4em;
+  }
+
+  .nav-btn,
+  .logout-btn {
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+}

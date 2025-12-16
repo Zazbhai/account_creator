@@ -1,0 +1,73 @@
+.admin-dashboard-page h2 {
+  color: #333;
+  margin-bottom: 20px;
+}
+
+.admin-dashboard-page h3 {
+  color: #333;
+  margin-top: 30px;
+  margin-bottom: 15px;
+}
+
+.info-pills {
+  margin: 20px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.info-pill {
+  display: inline-block;
+  background: #e1b382;
+  color: #12343b;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 20px;
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+th,
+td {
+  padding: 12px;
+  text-align: left;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+th {
+  background: #f5f5f5;
+  font-weight: 600;
+}
+
+tbody tr:hover {
+  background: #f9f9f9;
+}
+
+@media (max-width: 600px) {
+  .admin-dashboard-page h2 {
+    font-size: 1.4em;
+  }
+
+  .info-pills {
+    flex-direction: column;
+  }
+
+  .info-pill {
+    width: 100%;
+    text-align: center;
+  }
+
+  .admin-dashboard-page table {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+  }
+}
