@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import { Skeleton, SkeletonTable } from '../components/Skeleton'
+import StatusPopup from '../components/StatusPopup'
 import './AdminUsers.css'
 
 export default function AdminUsers() {
@@ -12,7 +13,7 @@ export default function AdminUsers() {
     role: 'user',
     expiry_days: ''
   })
-  const [message, setMessage] = useState('')
+  const [popup, setPopup] = useState({ type: null, message: '' })
 
   useEffect(() => {
     loadUsers()
@@ -31,15 +32,18 @@ export default function AdminUsers() {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    setMessage('')
+    setPopup({ type: null, message: '' })
 
     try {
       await axios.post('/api/admin/users', formData, { withCredentials: true })
-      setMessage('User created successfully')
+      setPopup({ type: 'success', message: 'User created successfully' })
       setFormData({ username: '', password: '', role: 'user', expiry_days: '' })
       loadUsers()
     } catch (error) {
-      setMessage(error.response?.data?.error || 'Failed to create user')
+      setPopup({
+        type: 'error',
+        message: error.response?.data?.error || 'Failed to create user',
+      })
     }
   }
 
@@ -48,10 +52,33 @@ export default function AdminUsers() {
 
     try {
       await axios.delete(`/api/admin/users/${userId}`, { withCredentials: true })
-      setMessage('User deleted successfully')
+      setPopup({ type: 'success', message: 'User deleted successfully' })
       loadUsers()
     } catch (error) {
-      setMessage(error.response?.data?.error || 'Failed to delete user')
+      setPopup({
+        type: 'error',
+        message: error.response?.data?.error || 'Failed to delete user',
+      })
+    }
+  }
+
+  const changeExpiry = async (userId, deltaDays) => {
+    try {
+      const res = await axios.patch(
+        `/api/admin/users/${userId}/expiry`,
+        { delta_days: deltaDays },
+        { withCredentials: true }
+      )
+      setPopup({
+        type: 'success',
+        message: `Expiry updated to ${res.data.expiry_date || 'Never'}`,
+      })
+      loadUsers()
+    } catch (error) {
+      setPopup({
+        type: 'error',
+        message: error.response?.data?.error || 'Failed to update expiry',
+      })
     }
   }
 
@@ -68,10 +95,12 @@ export default function AdminUsers() {
   return (
     <div className="admin-users-page">
       <h2>User Management</h2>
-      {message && (
-        <div className={message.includes('success') ? 'success' : 'error'}>
-          {message}
-        </div>
+      {popup.message && (
+        <StatusPopup
+          type={popup.type}
+          message={popup.message}
+          onClose={() => setPopup({ type: null, message: '' })}
+        />
       )}
       <h3>Add New User</h3>
       <form onSubmit={handleSubmit} className="user-form">
@@ -133,12 +162,31 @@ export default function AdminUsers() {
               <td>{user.role}</td>
               <td>{user.expiry_date || 'Never'}</td>
               <td>
-                <button
-                  onClick={() => handleDelete(user.id)}
-                  className="delete-button"
-                >
-                  Delete
-                </button>
+                <div className="actions-cell">
+                  <div className="expiry-controls">
+                    <button
+                      type="button"
+                      className="expiry-btn"
+                      onClick={() => changeExpiry(user.id, 1)}
+                    >
+                      +1 day
+                    </button>
+                    <button
+                      type="button"
+                      className="expiry-btn"
+                      onClick={() => changeExpiry(user.id, -1)}
+                    >
+                      -1 day
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => handleDelete(user.id)}
+                    className="delete-button"
+                    type="button"
+                  >
+                    Delete
+                  </button>
+                </div>
               </td>
             </tr>
           ))}

@@ -1,20 +1,22 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import { Skeleton } from '../components/Skeleton'
+import StatusPopup from '../components/StatusPopup'
 import './IMAPSettings.css'
 
 export default function IMAPSettings() {
   const [config, setConfig] = useState({
-    host: '',
+    // Use same defaults as imap.py DEFAULT_CONFIG (except for sensitive fields)
+    host: 'imappro.zoho.in',
     port: 993,
     email: '',
     password: '',
-    mailbox: 'INBOX',
+    mailbox: 'Notification',
     api_key: ''
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState('')
+  const [popup, setPopup] = useState({ type: null, message: '' })
 
   useEffect(() => {
     loadConfig()
@@ -25,14 +27,13 @@ export default function IMAPSettings() {
       const response = await axios.get('/api/imap/config', { withCredentials: true })
       const incoming = response.data.config || {}
       setConfig((prev) => ({
-        // Only prefill non-sensitive fields; keep email/password/api_key empty in UI
         ...prev,
-        host: incoming.host || prev.host,
-        port: incoming.port || prev.port,
-        mailbox: incoming.mailbox || prev.mailbox,
-        email: '',
-        password: '',
-        api_key: '',
+        host: incoming.host ?? prev.host,
+        port: incoming.port ?? prev.port,
+        mailbox: incoming.mailbox ?? prev.mailbox,
+        email: incoming.email ?? prev.email,
+        password: incoming.password ?? prev.password,
+        api_key: incoming.api_key ?? prev.api_key,
       }))
     } catch (error) {
       console.error('Error loading config:', error)
@@ -44,13 +45,16 @@ export default function IMAPSettings() {
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
-    setMessage('')
+    setPopup({ type: null, message: '' })
 
     try {
       await axios.post('/api/imap/config', config, { withCredentials: true })
-      setMessage('Settings saved successfully')
+      setPopup({ type: 'success', message: 'IMAP settings saved successfully' })
     } catch (error) {
-      setMessage(error.response?.data?.error || 'Failed to save settings')
+      setPopup({
+        type: 'error',
+        message: error.response?.data?.error || 'Failed to save IMAP settings',
+      })
     } finally {
       setSaving(false)
     }
@@ -68,10 +72,12 @@ export default function IMAPSettings() {
   return (
     <div className="imap-settings-page">
       <h2>IMAP Settings</h2>
-      {message && (
-        <div className={message.includes('success') ? 'success' : 'error'}>
-          {message}
-        </div>
+      {popup.message && (
+        <StatusPopup
+          type={popup.type}
+          message={popup.message}
+          onClose={() => setPopup({ type: null, message: '' })}
+        />
       )}
       <form onSubmit={handleSubmit}>
         <div className="form-group">

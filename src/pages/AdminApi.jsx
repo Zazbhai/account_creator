@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import { Skeleton, SkeletonCard } from '../components/Skeleton'
+import StatusPopup from '../components/StatusPopup'
 import './AdminApi.css'
 
 export default function AdminApi() {
@@ -13,10 +14,14 @@ export default function AdminApi() {
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [message, setMessage] = useState('')
+  const [marginFee, setMarginFee] = useState('')
+  const [savingMargin, setSavingMargin] = useState(false)
+  const [marginBalance, setMarginBalance] = useState(0)
+  const [popup, setPopup] = useState({ type: null, message: '' })
 
   useEffect(() => {
     loadSettings()
+    loadMargin()
   }, [])
 
   const loadSettings = async () => {
@@ -25,27 +30,73 @@ export default function AdminApi() {
       setSettings(res.data.settings || settings)
     } catch (err) {
       console.error('Error loading API settings:', err)
-      setMessage('Failed to load API settings')
+      setPopup({ type: 'error', message: 'Failed to load API settings' })
     } finally {
       setLoading(false)
+    }
+  }
+
+  const loadMargin = async () => {
+    try {
+      const res = await axios.get('/api/admin/margin-fees', { withCredentials: true })
+      if (typeof res.data.per_account_fee === 'number') {
+        setMarginFee(res.data.per_account_fee.toString())
+      }
+      if (typeof res.data.margin_balance === 'number') {
+        setMarginBalance(res.data.margin_balance)
+      }
+    } catch (err) {
+      console.error('Error loading margin fees:', err)
+      // Don't show popup here to avoid overriding API errors
     }
   }
 
   const handleSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
-    setMessage('')
+    setPopup({ type: null, message: '' })
 
     try {
       const res = await axios.post('/api/admin/api-settings', settings, {
         withCredentials: true,
       })
       setSettings(res.data.settings || settings)
-      setMessage('API settings saved successfully')
+      setPopup({ type: 'success', message: 'API settings saved successfully' })
     } catch (err) {
-      setMessage(err.response?.data?.error || 'Failed to save API settings')
+      setPopup({
+        type: 'error',
+        message: err.response?.data?.error || 'Failed to save API settings',
+      })
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSaveMargin = async (e) => {
+    e.preventDefault()
+    setSavingMargin(true)
+    setPopup({ type: null, message: '' })
+    try {
+      const numericFee = parseFloat(marginFee)
+      if (!numericFee || numericFee <= 0) {
+        throw new Error('Margin fee must be greater than zero')
+      }
+      await axios.post(
+        '/api/admin/margin-fees',
+        { per_account_fee: numericFee },
+        { withCredentials: true }
+      )
+      setPopup({ type: 'success', message: 'Margin fees updated successfully' })
+    } catch (err) {
+      setPopup({
+        type: 'error',
+        message:
+          err.response?.data?.error ||
+          err.message ||
+          'Failed to update margin fees',
+      })
+    } finally {
+      setSavingMargin(false)
     }
   }
 
@@ -61,10 +112,12 @@ export default function AdminApi() {
   return (
     <div className="admin-api-page">
       <h2>API Settings</h2>
-      {message && (
-        <div className={message.toLowerCase().includes('success') ? 'success' : 'error'}>
-          {message}
-        </div>
+      {popup.message && (
+        <StatusPopup
+          type={popup.type}
+          message={popup.message}
+          onClose={() => setPopup({ type: null, message: '' })}
+        />
       )}
       <form onSubmit={handleSubmit} className="api-form">
         <div className="form-group">
@@ -121,6 +174,34 @@ export default function AdminApi() {
         </div>
         <button type="submit" disabled={saving}>
           {saving ? 'Saving...' : 'Save API Settings'}
+        </button>
+      </form>
+
+      <h3 style={{ marginTop: '32px', marginBottom: '8px' }}>Margin Fees</h3>
+      <form onSubmit={handleSaveMargin} className="api-form">
+        <div className="form-group">
+          <label>Current total margin fees balance (₹):</label>
+          <input
+            type="text"
+            value={`₹${marginBalance.toFixed(2)}`}
+            readOnly
+            disabled
+          />
+        </div>
+        <div className="form-group">
+          <label>Margin per account (₹):</label>
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={marginFee}
+            onChange={(e) => setMarginFee(e.target.value)}
+            required
+            disabled={savingMargin}
+          />
+        </div>
+        <button type="submit" disabled={savingMargin}>
+          {savingMargin ? 'Saving...' : 'Save Margin Fees'}
         </button>
       </form>
     </div>

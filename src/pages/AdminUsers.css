@@ -65,6 +65,25 @@ button:hover {
   font-size: 14px !important;
 }
 
+.actions-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.expiry-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.expiry-btn {
+  width: auto !important;
+  padding: 4px 8px !important;
+  font-size: 12px !important;
+  background: #e1b382 !important;
+  color: #12343b !important;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

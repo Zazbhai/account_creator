@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, Tuple
 from urllib import error, parse, request
 
 # API credentials and defaults
-API_KEY = ""
+API_KEY = "2ce12168a4f72374207d61fc634ba23c79cf"
 OPERATOR = "1"
 COUNTRY = "22"
 SERVICE = "pfk"

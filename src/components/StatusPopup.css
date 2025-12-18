@@ -1,0 +1,123 @@
+.status-popup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 12000;
+}
+
+.status-popup {
+  background: #ffffff;
+  padding: 24px 28px 20px;
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  width: 90%;
+  max-width: 360px;
+  text-align: center;
+  animation: status-pop-in 0.25s ease-out;
+}
+
+.status-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  margin: 0 auto 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  animation: status-pulse 0.9s ease-out;
+}
+
+.status-icon.success {
+  background: #e8f5e9;
+  border: 3px solid #4caf50;
+}
+
+.status-icon.error {
+  background: #ffebee;
+  border: 3px solid #e53935;
+}
+
+.status-icon-mark {
+  display: block;
+  width: 28px;
+  height: 14px;
+  border-left: 4px solid #4caf50;
+  border-bottom: 4px solid #4caf50;
+  transform: rotate(-45deg) translateY(-2px);
+}
+
+.status-icon.error .status-icon-mark {
+  width: 26px;
+  height: 26px;
+  border: none;
+  position: relative;
+}
+
+.status-icon.error .status-icon-mark::before,
+.status-icon.error .status-icon-mark::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 20px;
+  height: 3px;
+  background: #e53935;
+  transform-origin: center;
+}
+
+.status-icon.error .status-icon-mark::before {
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+
+.status-icon.error .status-icon-mark::after {
+  transform: translate(-50%, -50%) rotate(-45deg);
+}
+
+.status-message {
+  font-size: 0.95rem;
+  color: #333;
+  margin-bottom: 16px;
+}
+
+.status-close-btn {
+  padding: 8px 22px;
+  border-radius: 999px;
+  border: none;
+  background: linear-gradient(135deg, #2d545e 0%, #12343b 100%);
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.status-close-btn:hover {
+  opacity: 0.9;
+}
+
+@keyframes status-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes status-pulse {
+  0% {
+    transform: scale(0.7);
+  }
+  60% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
