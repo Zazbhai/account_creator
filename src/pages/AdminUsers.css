@@ -71,17 +71,189 @@ button:hover {
   gap: 6px;
 }
 
-.expiry-controls {
-  display: flex;
-  gap: 6px;
-}
-
 .expiry-btn {
   width: auto !important;
-  padding: 4px 8px !important;
-  font-size: 12px !important;
+  padding: 6px 12px !important;
+  font-size: 13px !important;
   background: #e1b382 !important;
   color: #12343b !important;
+  margin-bottom: 6px;
+}
+
+.expiry-popup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  animation: expiry-overlay-fade 0.2s ease-out;
+}
+
+.expiry-popup {
+  position: relative;
+  background: radial-gradient(circle at top, #ffffff 0%, #f8f3ec 60%, #f1e3d4 100%);
+  padding: 28px 32px 24px;
+  border-radius: 18px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
+  width: 90%;
+  max-width: 400px;
+  animation: expiry-pop-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1.1);
+}
+
+.expiry-popup-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: none;
+  background: transparent;
+  color: #555;
+  font-size: 28px;
+  font-weight: 300;
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+  transition: color 0.15s ease, transform 0.15s ease;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+}
+
+.expiry-popup-close:hover {
+  color: #222;
+  background: rgba(0, 0, 0, 0.05);
+  transform: scale(1.1);
+}
+
+.expiry-popup-content h3 {
+  margin: 0 0 20px 0;
+  color: #333;
+  font-size: 1.3rem;
+  text-align: center;
+}
+
+.expiry-mode-buttons {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+
+.expiry-mode-btn {
+  flex: 1;
+  padding: 14px 20px;
+  border: none;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  width: auto !important;
+}
+
+.expiry-mode-btn.add-btn {
+  background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%);
+  color: white;
+}
+
+.expiry-mode-btn.remove-btn {
+  background: linear-gradient(135deg, #f44336 0%, #c62828 100%);
+  color: white;
+}
+
+.expiry-mode-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+}
+
+.expiry-input-group {
+  margin-bottom: 20px;
+}
+
+.expiry-input-group label {
+  display: block;
+  margin-bottom: 10px;
+  color: #555;
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.expiry-input-group input {
+  width: 100%;
+  padding: 12px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 16px;
+  transition: border-color 0.3s;
+  box-sizing: border-box;
+}
+
+.expiry-input-group input:focus {
+  outline: none;
+  border-color: #e1b382;
+}
+
+.expiry-popup-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+}
+
+.expiry-submit-btn,
+.expiry-cancel-btn {
+  flex: 1;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.2s, box-shadow 0.2s;
+  width: auto !important;
+}
+
+.expiry-submit-btn {
+  background: linear-gradient(135deg, #2d545e 0%, #12343b 100%);
+  color: white;
+}
+
+.expiry-cancel-btn {
+  background: #e0e0e0;
+  color: #555;
+}
+
+.expiry-submit-btn:hover,
+.expiry-cancel-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
+}
+
+@keyframes expiry-overlay-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes expiry-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.9);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.03);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 table {

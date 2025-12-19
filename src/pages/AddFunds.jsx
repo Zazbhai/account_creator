@@ -15,8 +15,6 @@ export default function AddFunds() {
   const [showPlanner, setShowPlanner] = useState(true)
   const [plannerAmount, setPlannerAmount] = useState('')
   const [plannerAccounts, setPlannerAccounts] = useState('')
-  const [payAnimating, setPayAnimating] = useState(false)
-  const [showUtrPopup, setShowUtrPopup] = useState(false)
 
   useEffect(() => {
     const load = async () => {
@@ -134,23 +132,31 @@ export default function AddFunds() {
     upiText
   )}`
 
-  const handlePayClick = () => {
+  const handleDownloadQR = async () => {
     if (!parsedAmount || parsedAmount <= 0) {
-      setPopup({ type: 'error', message: 'Enter a valid amount to add before paying.' })
+      setPopup({ type: 'error', message: 'Enter a valid amount to add before downloading QR.' })
       return
     }
-    // Trigger UPI intent on supported devices
     try {
-      window.location.href = upiText
-    } catch (e) {
-      // ignore navigation errors
+      // Fetch the QR code image
+      const response = await fetch(qrSrc)
+      const blob = await response.blob()
+      
+      // Create a download link
+      const url = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `upi-qr-${parsedAmount}-rupees.png`
+      document.body.appendChild(link)
+      link.click()
+      
+      // Cleanup
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Error downloading QR code:', error)
+      setPopup({ type: 'error', message: 'Failed to download QR code. Please try again.' })
     }
-    setPayAnimating(true)
-    setTimeout(() => {
-      setPayAnimating(false)
-    }, 700)
-    // Show UTR popup and blur background
-    setShowUtrPopup(true)
   }
 
   if (loading) {
@@ -168,42 +174,6 @@ export default function AddFunds() {
   return (
     <div className="add-funds-page">
       <h2>Add Funds</h2>
-
-      {showUtrPopup && (
-        <div className="popup-overlay">
-          <div className="popup utr-popup">
-            <button
-              type="button"
-              className="popup-close-icon"
-              onClick={() => setShowUtrPopup(false)}
-            >
-              ✕
-            </button>
-            <h3>Enter UTR / RRN</h3>
-            <p style={{ marginBottom: '12px', color: '#666', fontSize: '14px' }}>
-              After paying with UPI, enter the bank UTR / RRN to verify your payment.
-            </p>
-            <div className="form-group">
-              <label htmlFor="utr_popup">UTR / RRN number</label>
-              <input
-                id="utr_popup"
-                type="text"
-                value={utr}
-                onChange={(e) => setUtr(e.target.value)}
-                placeholder="Enter bank UTR / RRN"
-                autoFocus
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowUtrPopup(false)}
-              style={{ marginTop: '12px' }}
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      )}
 
       {showPlanner && (
         <div className="popup-overlay">
@@ -257,7 +227,7 @@ export default function AddFunds() {
         />
       )}
 
-      <div className={`add-funds-content ${showUtrPopup ? 'blurred' : ''}`}>
+      <div className="add-funds-content">
         <div className="funds-balance-card">
           <div className="funds-balance-label">Current margin fees balance</div>
           <div className="funds-balance-value">
@@ -328,25 +298,16 @@ export default function AddFunds() {
                   <span className="qr-corner qr-corner-bl" />
                   <span className="qr-corner qr-corner-br" />
                   <img src={qrSrc} alt="UPI QR" className="upi-qr" />
-                  <button
-                    type="button"
-                    className="download-qr-icon"
-                    onClick={() => window.open(qrSrc, '_blank')}
-                    title="Download QR"
-                  >
-                    ⬇
-                  </button>
                 </div>
               </div>
             </div>
             <div className="pay-actions-container">
               <button
                 type="button"
-                className={`pay-mobile-btn ${payAnimating ? 'animating' : ''}`}
-                onClick={handlePayClick}
+                className="download-qr-btn"
+                onClick={handleDownloadQR}
               >
-                <span className="pay-arrow">➜</span>
-                <span className="pay-text">Pay with UPI</span>
+                Download QR
               </button>
             </div>
             <div className="upi-text">

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 
 import { Skeleton } from '../components/Skeleton'
+import StatusPopup from '../components/StatusPopup'
 
 import './Logs.css'
 
@@ -18,7 +19,7 @@ export default function Logs() {
 
   const [loading, setLoading] = useState(true)
 
-  const [error, setError] = useState('')
+  const [popup, setPopup] = useState({ type: null, message: '' })
 
 
 
@@ -26,7 +27,7 @@ export default function Logs() {
 
     if (!name) return
 
-    if (!silent) setError('')
+    if (!silent) setPopup({ type: null, message: '' })
 
     try {
 
@@ -48,7 +49,7 @@ export default function Logs() {
 
       if (!silent) {
 
-        setError(err.response?.data?.error || 'Failed to load log file.')
+        setPopup({ type: 'error', message: err.response?.data?.error || 'Failed to load log file.' })
 
       }
 
@@ -60,7 +61,7 @@ export default function Logs() {
 
   const loadLogFiles = async () => {
 
-    setError('')
+    setPopup({ type: null, message: '' })
 
     try {
 
@@ -98,7 +99,7 @@ export default function Logs() {
 
       console.error('Error loading log files:', err)
 
-      setError(err.response?.data?.error || 'Failed to load log files.')
+      setPopup({ type: 'error', message: err.response?.data?.error || 'Failed to load log files.' })
 
     } finally {
 
@@ -178,7 +179,13 @@ export default function Logs() {
 
 
 
-      {error && <div className="error">{error}</div>}
+      {popup.message && (
+        <StatusPopup
+          type={popup.type}
+          message={popup.message}
+          onClose={() => setPopup({ type: null, message: '' })}
+        />
+      )}
 
 
 

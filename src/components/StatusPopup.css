@@ -2,85 +2,145 @@
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 12000;
+  animation: status-overlay-fade 0.2s ease-out;
 }
 
 .status-popup {
-  background: #ffffff;
+  position: relative;
+  background: radial-gradient(circle at top, #ffffff 0%, #f8f3ec 60%, #f1e3d4 100%);
   padding: 24px 28px 20px;
-  border-radius: 16px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  border-radius: 18px;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.35);
   width: 90%;
   max-width: 360px;
   text-align: center;
-  animation: status-pop-in 0.25s ease-out;
+  animation: status-pop-in 0.28s cubic-bezier(0.2, 0.8, 0.2, 1.1);
 }
 
-.status-icon {
-  width: 64px;
-  height: 64px;
-  border-radius: 50%;
-  margin: 0 auto 12px;
+/* Cracker / burst effect for successful UTRs */
+.status-popup--success::before,
+.status-popup--success::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.status-popup--success::before {
+  background:
+    conic-gradient(from 0deg,
+      rgba(255, 255, 255, 0.9),
+      rgba(243, 228, 209, 0.9),
+      rgba(240, 210, 178, 0.95),
+      rgba(45, 84, 94, 0.85),
+      rgba(240, 210, 178, 0.95),
+      rgba(243, 228, 209, 0.9));
+  mix-blend-mode: screen;
+  animation: cracker-burst 0.6s ease-out 1;
+}
+
+.status-popup--success::after {
+  border: 2px solid rgba(255, 215, 128, 0.9);
+  animation: cracker-ring 0.7s ease-out 1;
+}
+
+.status-popup-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  border: none;
+  background: transparent;
+  color: #555;
+  font-size: 24px;
+  font-weight: 300;
+  cursor: pointer;
+  padding: 4px 8px;
+  line-height: 1;
+  transition: color 0.15s ease, transform 0.15s ease;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
-  animation: status-pulse 0.9s ease-out;
+  border-radius: 50%;
 }
 
-.status-icon.success {
-  background: #e8f5e9;
-  border: 3px solid #4caf50;
+.status-popup-close:hover {
+  color: #222;
+  background: rgba(0, 0, 0, 0.05);
+  transform: scale(1.1);
 }
 
-.status-icon.error {
-  background: #ffebee;
-  border: 3px solid #e53935;
+.status-icon {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
 }
 
-.status-icon-mark {
+/* SVG success / error icons */
+.status-icon svg {
+  width: 80px;
+  height: 80px;
   display: block;
-  width: 28px;
-  height: 14px;
-  border-left: 4px solid #4caf50;
-  border-bottom: 4px solid #4caf50;
-  transform: rotate(-45deg) translateY(-2px);
 }
 
-.status-icon.error .status-icon-mark {
-  width: 26px;
-  height: 26px;
-  border: none;
-  position: relative;
+.status-icon .ui-success,
+.status-icon .ui-error {
+  width: 80px;
+  height: 80px;
+  margin: 0;
 }
 
-.status-icon.error .status-icon-mark::before,
-.status-icon.error .status-icon-mark::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 20px;
-  height: 3px;
-  background: #e53935;
-  transform-origin: center;
+/* Success */
+.ui-success-circle {
+  stroke-dasharray: 260.75219024795285px, 260.75219024795285px;
+  stroke-dashoffset: 260.75219024795285px;
+  transform: rotate(220deg);
+  transform-origin: center center;
+  stroke-linecap: round;
+  animation: ani-success-circle 1s ease-in both;
 }
 
-.status-icon.error .status-icon-mark::before {
-  transform: translate(-50%, -50%) rotate(45deg);
+.ui-success-path {
+  stroke-dasharray: 60px 64px;
+  stroke-dashoffset: 62px;
+  stroke-linecap: round;
+  animation: ani-success-path 0.4s 1s ease-in both;
 }
 
-.status-icon.error .status-icon-mark::after {
-  transform: translate(-50%, -50%) rotate(-45deg);
+/* Error */
+.ui-error-circle {
+  stroke-dasharray: 260.75219024795285px, 260.75219024795285px;
+  stroke-dashoffset: 260.75219024795285px;
+  animation: ani-error-circle 1.2s linear;
+}
+
+.ui-error-line1,
+.ui-error-line2 {
+  stroke-dasharray: 54px 55px;
+  stroke-dashoffset: 55px;
+  stroke-linecap: round;
+}
+
+.ui-error-line1 {
+  animation: ani-error-line 0.15s 1.2s linear both;
+}
+
+.ui-error-line2 {
+  animation: ani-error-line 0.2s 0.9s linear both;
 }
 
 .status-message {
   font-size: 0.95rem;
   color: #333;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 
 .status-close-btn {
@@ -92,16 +152,38 @@
   font-weight: 600;
   font-size: 0.9rem;
   cursor: pointer;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.3);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
 }
 
 .status-close-btn:hover {
-  opacity: 0.9;
+  opacity: 0.95;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.32);
+}
+
+.status-close-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.24);
+}
+
+@keyframes status-overlay-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @keyframes status-pop-in {
   from {
     opacity: 0;
-    transform: translateY(12px) scale(0.96);
+    transform: translateY(16px) scale(0.9);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(-4px) scale(1.03);
   }
   to {
     opacity: 1;
@@ -109,15 +191,79 @@
   }
 }
 
-@keyframes status-pulse {
-  0% {
-    transform: scale(0.7);
-  }
-  60% {
-    transform: scale(1.05);
-  }
-  100% {
-    transform: scale(1);
+/* SVG animations from reference */
+@keyframes ani-success-circle {
+  to {
+    stroke-dashoffset: 782.2565707438586px;
   }
 }
 
+@keyframes ani-success-path {
+  0% {
+    stroke-dashoffset: 62px;
+  }
+  65% {
+    stroke-dashoffset: -5px;
+  }
+  84% {
+    stroke-dashoffset: 4px;
+  }
+  100% {
+    stroke-dashoffset: -2px;
+  }
+}
+
+@keyframes ani-error-line {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes ani-error-circle {
+  0% {
+    stroke-dasharray: 0, 260.75219024795285px;
+    stroke-dashoffset: 0;
+  }
+  35% {
+    stroke-dasharray: 120px, 120px;
+    stroke-dashoffset: -120px;
+  }
+  70% {
+    stroke-dasharray: 0, 260.75219024795285px;
+    stroke-dashoffset: -260.75219024795285px;
+  }
+  100% {
+    stroke-dasharray: 260.75219024795285px, 0;
+    stroke-dashoffset: -260.75219024795285px;
+  }
+}
+
+@keyframes cracker-burst {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  40% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes cracker-ring {
+  0% {
+    opacity: 0.8;
+    transform: scale(0.7);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.25);
+  }
+}

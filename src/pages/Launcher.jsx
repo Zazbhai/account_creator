@@ -38,7 +38,7 @@ export default function Launcher() {
 
   const [maxParallel, setMaxParallel] = useState(4)
 
-  const [error, setError] = useState('')
+  const [popup, setPopup] = useState({ type: null, message: '' })
 
   const [imapReady, setImapReady] = useState(false)
 
@@ -62,8 +62,9 @@ export default function Launcher() {
     const init = async () => {
 
       try {
-
+        console.log('[DEBUG] [Launcher] Calling GET /api/imap/config')
         const res = await axios.get('/api/imap/config', { withCredentials: true })
+        console.log('[DEBUG] [Launcher] GET /api/imap/config response:', res.data)
 
         const cfg = res.data.config || {}
 
@@ -102,8 +103,9 @@ export default function Launcher() {
         }, 2000)
 
       } catch (err) {
-
-        console.error('Error checking IMAP/API config:', err)
+        console.error('[DEBUG] [Launcher] Error checking IMAP/API config:', err)
+        console.error('[DEBUG] [Launcher] Error response:', err.response?.data)
+        console.error('[DEBUG] [Launcher] Error status:', err.response?.status)
 
         setImapReady(false)
 
@@ -146,6 +148,7 @@ export default function Launcher() {
     if (socket) {
 
       const handleBalance = (data) => {
+        console.log('[DEBUG] [Launcher] Socket event: balance', data)
 
         setBalance(data.balance)
 
@@ -160,6 +163,7 @@ export default function Launcher() {
 
 
       const handleWorkerStatus = (data) => {
+        console.log('[DEBUG] [Launcher] Socket event: worker_status', data)
 
         setRunning(data.running)
 
@@ -190,8 +194,9 @@ export default function Launcher() {
   const loadBalance = async () => {
 
     try {
-
+      console.log('[DEBUG] [Launcher] Calling GET /api/balance')
       const response = await axios.get('/api/balance', { withCredentials: true })
+      console.log('[DEBUG] [Launcher] GET /api/balance response:', response.data)
 
       setBalance(response.data.balance)
 
@@ -200,8 +205,9 @@ export default function Launcher() {
       setCapacity(response.data.capacity)
 
     } catch (error) {
-
-      setError('Failed to load balance')
+      console.error('[DEBUG] [Launcher] Error in loadBalance:', error)
+      console.error('[DEBUG] [Launcher] Error response:', error.response?.data)
+      setPopup({ type: 'error', message: 'Failed to load balance' })
 
     } finally {
 
@@ -216,7 +222,7 @@ export default function Launcher() {
   const checkWorkerStatus = async () => {
 
     try {
-
+      console.log('[DEBUG] [Launcher] Calling GET /api/worker-status')
       const response = await axios.get('/api/worker-status', {
 
         withCredentials: true,
@@ -224,12 +230,13 @@ export default function Launcher() {
         skipLoader: true,
 
       })
+      console.log('[DEBUG] [Launcher] GET /api/worker-status response:', response.data)
 
       setRunning(response.data.running)
 
     } catch (error) {
-
-      console.error('Error checking worker status:', error)
+      console.error('[DEBUG] [Launcher] Error in checkWorkerStatus:', error)
+      console.error('[DEBUG] [Launcher] Error response:', error.response?.data)
 
     }
 
@@ -237,18 +244,21 @@ export default function Launcher() {
 
   const loadMarginBalance = async () => {
     try {
+      console.log('[DEBUG] [Launcher] Calling GET /api/margin-fees')
       const response = await axios.get('/api/margin-fees', {
         withCredentials: true,
         skipLoader: true,
       })
+      console.log('[DEBUG] [Launcher] GET /api/margin-fees response:', response.data)
       if (typeof response.data.margin_balance === 'number') {
         setMarginBalance(response.data.margin_balance)
       } else {
-        setMarginBalance(0)
+        setMarginBalance(0)  // Set to 0 instead of null so skeleton doesn't show
       }
     } catch (error) {
-      console.error('Error loading margin balance:', error)
-      setMarginBalance(0)
+      console.error('[DEBUG] [Launcher] Error loading margin balance:', error)
+      console.error('[DEBUG] [Launcher] Error response:', error.response?.data)
+      setMarginBalance(0)  // Set to 0 on error so skeleton doesn't show forever
     }
   }
 
@@ -257,7 +267,9 @@ export default function Launcher() {
   const loadLatestLogs = async ({ silent = false } = {}) => {
 
     try {
-
+      if (!silent) {
+        console.log('[DEBUG] [Launcher] Calling GET /api/reports/log-file?name=latest_logs.txt')
+      }
       const res = await axios.get('/api/reports/log-file', {
 
         params: { name: 'latest_logs.txt' },
@@ -267,6 +279,9 @@ export default function Launcher() {
         skipLoader: true,
 
       })
+      if (!silent) {
+        console.log('[DEBUG] [Launcher] GET /api/reports/log-file response length:', res.data.content?.length || 0)
+      }
 
       const content = res.data.content || ''
 
@@ -295,14 +310,17 @@ export default function Launcher() {
       // If file doesn't exist yet, just show "no logs" silently
 
       if (err.response?.status === 404) {
-
+        if (!silent) {
+          console.log('[DEBUG] [Launcher] GET /api/reports/log-file - file not found (404)')
+        }
         setLogs([])
 
         return
 
       }
 
-      console.error('Error loading latest logs:', err)
+      console.error('[DEBUG] [Launcher] Error loading latest logs:', err)
+      console.error('[DEBUG] [Launcher] Error response:', err.response?.data)
 
       if (!silent) {
 
@@ -364,33 +382,45 @@ export default function Launcher() {
       formData.append('use_used_account', useUsedAccount ? '1' : '0')
       formData.append('retry_failed', retryFailed ? '1' : '0')
 
+      console.log('[DEBUG] [Launcher] Calling POST /api/run with data:', {
+        total_accounts: totalAccounts,
+        max_parallel: maxParallel,
+        use_used_account: useUsedAccount ? '1' : '0',
+        retry_failed: retryFailed ? '1' : '0',
+      })
 
-
-      await axios.post('/api/run', formData, {
+      const response = await axios.post('/api/run', formData, {
 
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 
         withCredentials: true,
 
       })
+      console.log('[DEBUG] [Launcher] POST /api/run response:', response.data)
 
 
 
       setRunning(true)
-      // Update balance, price, capacity, and margin balance after starting
-      await loadBalance()
-      await loadMarginBalance()
+      // Reload balance, price, capacity, and margin balance IMMEDIATELY after starting
+      console.log('[DEBUG] [Launcher] Reloading balance and margin balance after start')
+      await Promise.all([
+        loadBalance(),
+        loadMarginBalance()
+      ])
       setTimeout(() => {
         loadLatestLogs({ silent: true })
       }, 500)
 
     } catch (error) {
+      console.error('[DEBUG] [Launcher] Error in handleSubmit:', error)
+      console.error('[DEBUG] [Launcher] Error response:', error.response?.data)
+      console.error('[DEBUG] [Launcher] Error status:', error.response?.status)
 
       const msg = error.response?.data?.error || 'Failed to start workers'
 
       const needed = error.response?.data?.amount_needed
 
-      setError(msg)
+      setPopup({ type: 'error', message: msg })
 
       if (typeof needed === 'number' && needed > 0) {
 
@@ -409,15 +439,16 @@ export default function Launcher() {
   const handleStop = async () => {
 
     try {
-
-      await axios.post('/api/stop', {}, { withCredentials: true })
+      console.log('[DEBUG] [Launcher] Calling POST /api/stop')
+      const response = await axios.post('/api/stop', {}, { withCredentials: true })
+      console.log('[DEBUG] [Launcher] POST /api/stop response:', response.data)
 
       setRunning(false)
       loadMarginBalance()
 
     } catch (error) {
-
-      console.error('Error stopping workers:', error)
+      console.error('[DEBUG] [Launcher] Error in handleStop:', error)
+      console.error('[DEBUG] [Launcher] Error response:', error.response?.data)
 
     }
 
@@ -433,7 +464,7 @@ export default function Launcher() {
 
       <div className="margin-fees-row">
         <span className="margin-fees-label">Margin fees balance</span>
-        {marginBalance === null && loading ? (
+        {marginBalance === null ? (
           <SkeletonPill />
         ) : (
           <div
@@ -441,7 +472,7 @@ export default function Launcher() {
             onClick={() => navigate('/funds')}
           >
             <span className="margin-fees-amount">
-              ₹{marginBalance !== null ? marginBalance.toFixed(2) : '0.00'}
+              ₹{marginBalance.toFixed(2)}
             </span>
             <span className="margin-fees-plus">+</span>
           </div>
@@ -450,7 +481,13 @@ export default function Launcher() {
 
 
 
-      {error && <div className="error">{error}</div>}
+      {popup.message && (
+        <StatusPopup
+          type={popup.type}
+          message={popup.message}
+          onClose={() => setPopup({ type: null, message: '' })}
+        />
+      )}
 
 
 

@@ -16,6 +16,7 @@ export default function AdminUsers() {
   const [popup, setPopup] = useState({ type: null, message: '' })
   const [editingFee, setEditingFee] = useState({ userId: null, value: '' })
   const [savingFee, setSavingFee] = useState(false)
+  const [expiryPopup, setExpiryPopup] = useState({ userId: null, mode: null, daysInput: '' })
 
   useEffect(() => {
     loadUsers()
@@ -64,6 +65,18 @@ export default function AdminUsers() {
     }
   }
 
+  const openExpiryPopup = (userId) => {
+    setExpiryPopup({ userId, mode: null, daysInput: '' })
+  }
+
+  const closeExpiryPopup = () => {
+    setExpiryPopup({ userId: null, mode: null, daysInput: '' })
+  }
+
+  const setExpiryMode = (mode) => {
+    setExpiryPopup({ ...expiryPopup, mode })
+  }
+
   const changeExpiry = async (userId, deltaDays) => {
     try {
       const res = await axios.patch(
@@ -75,6 +88,7 @@ export default function AdminUsers() {
         type: 'success',
         message: `Expiry updated to ${res.data.expiry_date || 'Never'}`,
       })
+      closeExpiryPopup()
       loadUsers()
     } catch (error) {
       setPopup({
@@ -82,6 +96,19 @@ export default function AdminUsers() {
         message: error.response?.data?.error || 'Failed to update expiry',
       })
     }
+  }
+
+  const handleExpirySubmit = () => {
+    const days = parseInt(expiryPopup.daysInput)
+    if (isNaN(days) || days <= 0) {
+      setPopup({
+        type: 'error',
+        message: 'Please enter a valid positive number of days',
+      })
+      return
+    }
+    const deltaDays = expiryPopup.mode === 'add' ? days : -days
+    changeExpiry(expiryPopup.userId, deltaDays)
   }
 
   const startEditingFee = (userId, currentFee) => {
@@ -145,6 +172,74 @@ export default function AdminUsers() {
           onClose={() => setPopup({ type: null, message: '' })}
         />
       )}
+      {expiryPopup.userId && (
+        <div className="expiry-popup-overlay" onClick={closeExpiryPopup}>
+          <div className="expiry-popup" onClick={(e) => e.stopPropagation()}>
+            <button className="expiry-popup-close" onClick={closeExpiryPopup}>
+              ×
+            </button>
+            {expiryPopup.mode === null ? (
+              <div className="expiry-popup-content">
+                <h3>Update Expiry</h3>
+                <div className="expiry-mode-buttons">
+                  <button
+                    type="button"
+                    className="expiry-mode-btn add-btn"
+                    onClick={() => setExpiryMode('add')}
+                  >
+                    Add Days
+                  </button>
+                  <button
+                    type="button"
+                    className="expiry-mode-btn remove-btn"
+                    onClick={() => setExpiryMode('remove')}
+                  >
+                    Remove Days
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="expiry-popup-content">
+                <h3>{expiryPopup.mode === 'add' ? 'Add Days' : 'Remove Days'}</h3>
+                <div className="expiry-input-group">
+                  <label>How many days to {expiryPopup.mode === 'add' ? 'add' : 'remove'}?</label>
+                  <input
+                    type="number"
+                    min="1"
+                    value={expiryPopup.daysInput}
+                    onChange={(e) =>
+                      setExpiryPopup({ ...expiryPopup, daysInput: e.target.value })
+                    }
+                    placeholder="Enter number of days"
+                    autoFocus
+                    onKeyPress={(e) => {
+                      if (e.key === 'Enter') {
+                        handleExpirySubmit()
+                      }
+                    }}
+                  />
+                </div>
+                <div className="expiry-popup-actions">
+                  <button
+                    type="button"
+                    className="expiry-submit-btn"
+                    onClick={handleExpirySubmit}
+                  >
+                    Update
+                  </button>
+                  <button
+                    type="button"
+                    className="expiry-cancel-btn"
+                    onClick={() => setExpiryPopup({ ...expiryPopup, mode: null, daysInput: '' })}
+                  >
+                    Back
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <h3>Add New User</h3>
       <form onSubmit={handleSubmit} className="user-form">
         <div className="form-group">
@@ -176,12 +271,13 @@ export default function AdminUsers() {
           </select>
         </div>
         <div className="form-group">
-          <label>Expiry Days (optional):</label>
+          <label>Expiry Days:</label>
           <input
             type="number"
             value={formData.expiry_days}
             onChange={(e) => setFormData({ ...formData, expiry_days: e.target.value })}
             min="1"
+            required
           />
         </div>
         <button type="submit">Create User</button>
@@ -253,22 +349,13 @@ export default function AdminUsers() {
               <td>₹{user.margin_balance?.toFixed(2) || '0.00'}</td>
               <td>
                 <div className="actions-cell">
-                  <div className="expiry-controls">
-                    <button
-                      type="button"
-                      className="expiry-btn"
-                      onClick={() => changeExpiry(user.id, 1)}
-                    >
-                      +1 day
-                    </button>
-                    <button
-                      type="button"
-                      className="expiry-btn"
-                      onClick={() => changeExpiry(user.id, -1)}
-                    >
-                      -1 day
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="expiry-btn"
+                    onClick={() => openExpiryPopup(user.id)}
+                  >
+                    Update Expiry
+                  </button>
                   <button
                     onClick={() => handleDelete(user.id)}
                     className="delete-button"

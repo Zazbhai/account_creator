@@ -93,10 +93,13 @@ export default function Layout({ children }) {
                 </Link>
               </>
             )}
-            <button onClick={handleLogout} className="logout-btn">
-              Logout
+            <button onClick={handleLogout} className="logout-btn desktop-logout" aria-label="Logout">
+              ⏻
             </button>
           </div>
+          <button onClick={handleLogout} className="logout-btn mobile-logout" aria-label="Logout">
+            ⏻
+          </button>
         </div>
         {!isAdmin && imapChecked && imapMissing && location.pathname !== '/imap' && (
           <div className="popup-overlay">
@@ -134,32 +137,40 @@ export default function Layout({ children }) {
         {!isAdmin && (
           <>
             <Link to="/" className={`link-btn ${location.pathname === '/' ? 'active' : ''}`}>
-              Launcher
+              <span className="link-icon">🏠</span>
+              <span className="link-label">Launch</span>
             </Link>
             <Link to="/imap" className={`link-btn ${location.pathname === '/imap' ? 'active' : ''}`}>
-              IMAP
+              <span className="link-icon">📧</span>
+              <span className="link-label">IMAP</span>
             </Link>
             <Link to="/funds" className={`link-btn ${location.pathname === '/funds' ? 'active' : ''}`}>
-              Add Funds
+              <span className="link-icon">💰</span>
+              <span className="link-label">Funds</span>
             </Link>
             <Link to="/reports" className={`link-btn ${location.pathname === '/reports' ? 'active' : ''}`}>
-              Reports
+              <span className="link-icon">📊</span>
+              <span className="link-label">Reports</span>
             </Link>
             <Link to="/logs" className={`link-btn ${location.pathname === '/logs' ? 'active' : ''}`}>
-              Logs
+              <span className="link-icon">📜</span>
+              <span className="link-label">Logs</span>
             </Link>
           </>
         )}
         {isAdmin && (
           <>
             <Link to="/admin/dashboard" className={`link-btn ${location.pathname === '/admin/dashboard' ? 'active' : ''}`}>
-              Dashboard
+              <span className="link-icon">📊</span>
+              <span className="link-label">Dashboard</span>
             </Link>
             <Link to="/admin/api" className={`link-btn ${location.pathname === '/admin/api' ? 'active' : ''}`}>
-              API
+              <span className="link-icon">🔧</span>
+              <span className="link-label">API</span>
             </Link>
             <Link to="/admin/users" className={`link-btn ${location.pathname === '/admin/users' ? 'active' : ''}`}>
-              Users
+              <span className="link-icon">👥</span>
+              <span className="link-label">Users</span>
             </Link>
           </>
         )}

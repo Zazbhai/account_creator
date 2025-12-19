@@ -325,6 +325,7 @@ def get_margin_fee() -> Optional[Dict[str, Any]]:
     return rows[0] if rows else None
 
 
+
 # Legacy function for backward compatibility (deprecated)
 def upsert_margin_fee(per_account_fee: float, margin_balance: Optional[float] = None) -> None:
     """Legacy: Upsert global margin per-account fee. DEPRECATED: Use upsert_margin_fee_for_user instead."""
@@ -347,3 +348,94 @@ def upsert_margin_fee(per_account_fee: float, margin_balance: Optional[float] = 
     if resp.status_code >= 400:
         print(f"[SUPABASE] Failed to upsert margin_fees: {resp.status_code} {resp.text}")
 
+
+# ===== Used UTRs (payment tracking) =====
+
+
+def get_used_utr(utr: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a used UTR row.
+    When Supabase is disabled, falls back to used_utrs.txt.
+    """
+    if not is_enabled():
+        return _get_utr_file(utr)
+
+    params = {"select": "utr,user_id,amount,created_at", "utr": f"eq.{utr}"}
+    resp = _request("GET", "/used_utrs", params=params)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    rows = resp.json() or []
+    return rows[0] if rows else None
+
+
+def insert_used_utr(utr: str, user_id: int, amount: float) -> None:
+    """
+    Insert a successful UTR into the used_utrs table.
+    Table structure: utr (primary key), user_id, amount, created_at
+    """
+    if not is_enabled():
+        _save_utr_file(utr, user_id, amount)
+        return
+
+    now_iso = datetime.datetime.utcnow().isoformat()
+    payload = {
+        "utr": utr,
+        "user_id": user_id,
+        "amount": amount,
+        "created_at": now_iso,
+    }
+    resp = _request(
+        "POST",
+        "/used_utrs",
+        json=payload,
+        headers={"Prefer": "return=representation"},
+    )
+    if resp.status_code >= 400:
+        print(f"[SUPABASE] Failed to insert used_utr {utr}: {resp.status_code} {resp.text}")
+
+
+def _get_utr_file(utr: str) -> Optional[Dict[str, Any]]:
+    """File-based fallback: return row for given UTR from used_utrs.txt."""
+    import os
+
+    utr_file = "used_utrs.txt"
+    if not os.path.exists(utr_file):
+        return None
+    try:
+        with open(utr_file, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split("|")
+                if not parts or parts[0] != utr:
+                    continue
+                # utr|user_id|amount|created_at
+                row: Dict[str, Any] = {"utr": parts[0]}
+                if len(parts) > 1:
+                    try:
+                        row["user_id"] = int(parts[1])
+                    except Exception:
+                        row["user_id"] = None
+                if len(parts) > 2:
+                    try:
+                        row["amount"] = float(parts[2])
+                    except Exception:
+                        row["amount"] = None
+                if len(parts) > 3:
+                    row["created_at"] = parts[3]
+                return row
+    except Exception as e:
+        print(f"[SUPABASE] Error reading used_utrs.txt: {e}")
+    return None
+
+
+def _save_utr_file(utr: str, user_id: int, amount: float) -> None:
+  """File-based fallback: Append UTR to used_utrs.txt."""
+  import os
+
+  utr_file = "used_utrs.txt"
+  now_iso = datetime.datetime.utcnow().isoformat()
+  try:
+      with open(utr_file, "a", encoding="utf-8") as f:
+          f.write(f"{utr}|{user_id}|{amount}|{now_iso}\n")
+  except Exception as e:
+      print(f"[SUPABASE] Error writing to used_utrs.txt: {e}")

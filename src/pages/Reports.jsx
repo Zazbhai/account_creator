@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react'
 import axios from 'axios'
 
 import { Skeleton, SkeletonTable } from '../components/Skeleton'
+import StatusPopup from '../components/StatusPopup'
 
 import './Reports.css'
 
@@ -16,13 +17,13 @@ export default function Reports() {
 
   const [loading, setLoading] = useState(true)
 
-  const [error, setError] = useState('')
+  const [popup, setPopup] = useState({ type: null, message: '' })
 
 
 
   const loadReports = async ({ silent = false } = {}) => {
 
-    if (!silent) setError('')
+    if (!silent) setPopup({ type: null, message: '' })
 
     try {
 
@@ -46,7 +47,7 @@ export default function Reports() {
 
       if (!silent) {
 
-        setError(err.response?.data?.error || 'Failed to load reports')
+        setPopup({ type: 'error', message: err.response?.data?.error || 'Failed to load reports' })
 
       }
 
@@ -134,7 +135,13 @@ export default function Reports() {
 
 
 
-      {error && <div className="error">{error}</div>}
+      {popup.message && (
+        <StatusPopup
+          type={popup.type}
+          message={popup.message}
+          onClose={() => setPopup({ type: null, message: '' })}
+        />
+      )}
 
 
 

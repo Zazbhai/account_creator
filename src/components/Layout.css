@@ -71,8 +71,26 @@
 }
 
 .logout-btn {
-  background: #c89666;
-  color: white;
+  background: transparent;
+  color: #c89666;
+  padding: 6px 10px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+}
+
+.logout-btn:hover {
+  background: rgba(200, 150, 102, 0.15);
+}
+
+.mobile-logout {
+  display: none;
+}
+
+.desktop-logout {
+  display: flex;
 }
 
 .bottom-nav {
@@ -89,25 +107,44 @@
 }
 
 .bottom-nav .link-btn {
-  padding: 10px 15px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 4px;
   background: transparent;
   color: #2d545e;
   border: none;
-  border-radius: 8px;
+  border-radius: 12px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 11px;
   text-decoration: none;
-  transition: background 0.3s;
+  transition: background 0.25s ease, transform 0.15s ease;
   font-weight: 600;
 }
 
 .bottom-nav .link-btn:hover {
-  background: #f0f0f0;
+  background: rgba(225, 179, 130, 0.18);
 }
 
 .bottom-nav .link-btn.active {
   background: #e1b382;
   color: #12343b;
+  transform: translateY(-2px);
+}
+
+.bottom-nav .link-icon {
+  font-size: 16px;
+  margin-bottom: 2px;
+}
+
+.bottom-nav .link-label {
+  font-size: 11px;
+}
+
+.bottom-nav .logout-link {
+  max-width: 60px;
 }
 
 @media (min-width: 769px) {
@@ -123,13 +160,28 @@
     border-radius: 12px;
   }
 
+  /* Hide top nav links on mobile, keep only title */
+  .nav-links {
+    display: none;
+  }
+
+  .header {
+    position: relative;
+  }
+
   .header h1 {
     font-size: 1.4em;
   }
 
-  .nav-btn,
-  .logout-btn {
-    font-size: 12px;
-    padding: 6px 10px;
+  .mobile-logout {
+    display: flex;
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 10;
+  }
+
+  .desktop-logout {
+    display: none;
   }
 }

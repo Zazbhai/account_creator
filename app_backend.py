@@ -854,6 +854,33 @@ def api_add_funds():
     if requested_amount <= 0:
         return jsonify({"error": "Amount must be greater than zero"}), 400
 
+    # Check if this UTR was already used before verifying again
+    try:
+        existing = supabase_client.get_used_utr(utr)
+    except Exception as e:
+        print(f"[WARN] Error checking used UTR {utr}: {e}")
+        existing = None
+
+    if existing is not None:
+        used_amount = existing.get("amount")
+        try:
+            used_amount_val = float(used_amount) if used_amount is not None else None
+        except (TypeError, ValueError):
+            used_amount_val = None
+
+        msg = "This UTR has already been applied"
+        if used_amount_val is not None:
+            msg += f" for ₹{used_amount_val:.2f}."
+        else:
+            msg += "."
+
+        return jsonify(
+            {
+                "error": msg + " Please use a different UTR.",
+                "used_amount": round(used_amount_val, 2) if used_amount_val is not None else None,
+            }
+        ), 400
+
     # Ask BharatPe API (via payment.py) to verify the payment
     try:
         ok, paid_amount = payment.payment_checker(utr)
@@ -879,7 +906,7 @@ def api_add_funds():
         try:
             # Get current margin_balance and per_account_fee to preserve them
             current_fee = get_margin_per_account(user_id)
-            
+
             # Get current margin_balance from margin_fees table (not wallet_balance)
             current_margin_balance = 0.0
             try:
@@ -889,10 +916,10 @@ def api_add_funds():
             except Exception:
                 # If row doesn't exist, start with 0.0
                 current_margin_balance = 0.0
-            
+
             # Add the paid amount to existing margin_balance
             new_margin_balance = current_margin_balance + paid_amount
-            
+
             # Upsert will create the row if it doesn't exist, or update if it does
             supabase_client.upsert_margin_fee_for_user(
                 user_id=user_id,
@@ -901,6 +928,13 @@ def api_add_funds():
             )
         except Exception as e:
             print(f"[WARN] Failed to update margin_fees for user {user_id}: {e}")
+
+    # Record this UTR as used so it cannot be applied again
+    try:
+        supabase_client.insert_used_utr(utr, user_id, paid_amount)
+    except Exception as e:
+        # Do not fail the whole request if tracking insert fails; just log it.
+        print(f"[WARN] Failed to insert used UTR {utr} for user {user_id}: {e}")
 
     return jsonify(
         {
@@ -1098,20 +1132,26 @@ def admin_users():
         password = request.json.get('password', '').strip()
         role = request.json.get('role', 'user').strip()
         expiry_days_str = request.json.get('expiry_days', '').strip()
-        expiry_days = None
-        if expiry_days_str:
-            try:
-                expiry_days = int(expiry_days_str)
-            except ValueError:
-                return jsonify({"error": "Invalid expiry days"}), 400
-        if username and password:
-            try:
-                password_hash = generate_password_hash(password)
-                create_user(username, password_hash, role, expiry_days)
-                return jsonify({"success": True})
-            except Exception as e:
-                return jsonify({"error": str(e)}), 400
-        return jsonify({"error": "Username and password required"}), 400
+
+        if not username or not password:
+            return jsonify({"error": "Username and password required"}), 400
+
+        if not expiry_days_str:
+            return jsonify({"error": "Expiry days is required"}), 400
+
+        try:
+            expiry_days = int(expiry_days_str)
+            if expiry_days <= 0:
+                raise ValueError()
+        except ValueError:
+            return jsonify({"error": "Invalid expiry days"}), 400
+
+        try:
+            password_hash = generate_password_hash(password)
+            create_user(username, password_hash, role, expiry_days)
+            return jsonify({"success": True})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 400
 
 @app.route('/api/admin/users/<int:user_id>', methods=['DELETE'])
 @admin_required

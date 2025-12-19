@@ -2,19 +2,20 @@ import React, { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { Skeleton } from '../components/Skeleton'
+import StatusPopup from '../components/StatusPopup'
 import './Login.css'
 
 export default function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
+  const [popup, setPopup] = useState({ type: null, message: '' })
   const [loading, setLoading] = useState(false)
   const { login } = useAuth()
   const navigate = useNavigate()
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    setError('')
+    setPopup({ type: null, message: '' })
     setLoading(true)
 
     const result = await login(username, password)
@@ -22,7 +23,7 @@ export default function Login() {
     if (result.success) {
       navigate('/')
     } else {
-      setError(result.error || 'Invalid username or password')
+      setPopup({ type: 'error', message: result.error || 'Invalid username or password' })
     }
     
     setLoading(false)
@@ -32,7 +33,13 @@ export default function Login() {
     <div className="login-page">
       <div className="login-container">
         <h1>Account Creator</h1>
-        {error && <div className="error">{error}</div>}
+        {popup.message && (
+          <StatusPopup
+            type={popup.type}
+            message={popup.message}
+            onClose={() => setPopup({ type: null, message: '' })}
+          />
+        )}
         <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label htmlFor="username">Username:</label>
