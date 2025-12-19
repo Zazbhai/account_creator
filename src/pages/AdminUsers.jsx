@@ -14,6 +14,8 @@ export default function AdminUsers() {
     expiry_days: ''
   })
   const [popup, setPopup] = useState({ type: null, message: '' })
+  const [editingFee, setEditingFee] = useState({ userId: null, value: '' })
+  const [savingFee, setSavingFee] = useState(false)
 
   useEffect(() => {
     loadUsers()
@@ -79,6 +81,47 @@ export default function AdminUsers() {
         type: 'error',
         message: error.response?.data?.error || 'Failed to update expiry',
       })
+    }
+  }
+
+  const startEditingFee = (userId, currentFee) => {
+    setEditingFee({ userId, value: currentFee?.toString() || '2.5' })
+  }
+
+  const cancelEditingFee = () => {
+    setEditingFee({ userId: null, value: '' })
+  }
+
+  const saveMarginFee = async (userId) => {
+    const feeValue = parseFloat(editingFee.value)
+    if (isNaN(feeValue) || feeValue <= 0) {
+      setPopup({
+        type: 'error',
+        message: 'Invalid fee amount. Must be a positive number.',
+      })
+      return
+    }
+
+    setSavingFee(true)
+    try {
+      await axios.patch(
+        `/api/admin/users/${userId}/margin-fee`,
+        { per_account_fee: feeValue },
+        { withCredentials: true }
+      )
+      setPopup({
+        type: 'success',
+        message: `Margin fee updated to ₹${feeValue.toFixed(2)}`,
+      })
+      setEditingFee({ userId: null, value: '' })
+      loadUsers()
+    } catch (error) {
+      setPopup({
+        type: 'error',
+        message: error.response?.data?.error || 'Failed to update margin fee',
+      })
+    } finally {
+      setSavingFee(false)
     }
   }
 
@@ -151,6 +194,8 @@ export default function AdminUsers() {
             <th>Username</th>
             <th>Role</th>
             <th>Expiry Date</th>
+            <th>Per Account Fee (₹)</th>
+            <th>Margin Balance (₹)</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -161,6 +206,51 @@ export default function AdminUsers() {
               <td>{user.username}</td>
               <td>{user.role}</td>
               <td>{user.expiry_date || 'Never'}</td>
+              <td>
+                {editingFee.userId === user.id ? (
+                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={editingFee.value}
+                      onChange={(e) =>
+                        setEditingFee({ ...editingFee, value: e.target.value })
+                      }
+                      style={{ width: '80px', padding: '4px' }}
+                      disabled={savingFee}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => saveMarginFee(user.id)}
+                      disabled={savingFee}
+                      style={{ padding: '4px 8px', fontSize: '12px' }}
+                    >
+                      {savingFee ? '...' : 'Save'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={cancelEditingFee}
+                      disabled={savingFee}
+                      style={{ padding: '4px 8px', fontSize: '12px' }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+                    <span>₹{user.per_account_fee?.toFixed(2) || '2.50'}</span>
+                    <button
+                      type="button"
+                      onClick={() => startEditingFee(user.id, user.per_account_fee)}
+                      style={{ padding: '2px 6px', fontSize: '11px', marginLeft: '4px' }}
+                    >
+                      Edit
+                    </button>
+                  </div>
+                )}
+              </td>
+              <td>₹{user.margin_balance?.toFixed(2) || '0.00'}</td>
               <td>
                 <div className="actions-cell">
                   <div className="expiry-controls">

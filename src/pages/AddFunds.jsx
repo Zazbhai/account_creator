@@ -16,6 +16,7 @@ export default function AddFunds() {
   const [plannerAmount, setPlannerAmount] = useState('')
   const [plannerAccounts, setPlannerAccounts] = useState('')
   const [payAnimating, setPayAnimating] = useState(false)
+  const [showUtrPopup, setShowUtrPopup] = useState(false)
 
   useEffect(() => {
     const load = async () => {
@@ -148,6 +149,8 @@ export default function AddFunds() {
     setTimeout(() => {
       setPayAnimating(false)
     }, 700)
+    // Show UTR popup and blur background
+    setShowUtrPopup(true)
   }
 
   if (loading) {
@@ -165,6 +168,42 @@ export default function AddFunds() {
   return (
     <div className="add-funds-page">
       <h2>Add Funds</h2>
+
+      {showUtrPopup && (
+        <div className="popup-overlay">
+          <div className="popup utr-popup">
+            <button
+              type="button"
+              className="popup-close-icon"
+              onClick={() => setShowUtrPopup(false)}
+            >
+              ✕
+            </button>
+            <h3>Enter UTR / RRN</h3>
+            <p style={{ marginBottom: '12px', color: '#666', fontSize: '14px' }}>
+              After paying with UPI, enter the bank UTR / RRN to verify your payment.
+            </p>
+            <div className="form-group">
+              <label htmlFor="utr_popup">UTR / RRN number</label>
+              <input
+                id="utr_popup"
+                type="text"
+                value={utr}
+                onChange={(e) => setUtr(e.target.value)}
+                placeholder="Enter bank UTR / RRN"
+                autoFocus
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowUtrPopup(false)}
+              style={{ marginTop: '12px' }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
 
       {showPlanner && (
         <div className="popup-overlay">
@@ -218,15 +257,16 @@ export default function AddFunds() {
         />
       )}
 
-      <div className="funds-balance-card">
-        <div className="funds-balance-label">Current margin fees balance</div>
-        <div className="funds-balance-value">
-          ₹{(currentBalance ?? 0).toFixed(2)}
+      <div className={`add-funds-content ${showUtrPopup ? 'blurred' : ''}`}>
+        <div className="funds-balance-card">
+          <div className="funds-balance-label">Current margin fees balance</div>
+          <div className="funds-balance-value">
+            ₹{(currentBalance ?? 0).toFixed(2)}
+          </div>
         </div>
-      </div>
 
-      <div className="add-funds-grid">
-        <form className="add-funds-form" onSubmit={handleSubmit}>
+        <div className="add-funds-grid">
+          <form className="add-funds-form" onSubmit={handleSubmit}>
           <div className="form-group">
             <label htmlFor="amount">Amount to add (₹)</label>
             <input
@@ -288,6 +328,14 @@ export default function AddFunds() {
                   <span className="qr-corner qr-corner-bl" />
                   <span className="qr-corner qr-corner-br" />
                   <img src={qrSrc} alt="UPI QR" className="upi-qr" />
+                  <button
+                    type="button"
+                    className="download-qr-icon"
+                    onClick={() => window.open(qrSrc, '_blank')}
+                    title="Download QR"
+                  >
+                    ⬇
+                  </button>
                 </div>
               </div>
             </div>
@@ -300,16 +348,6 @@ export default function AddFunds() {
                 <span className="pay-arrow">➜</span>
                 <span className="pay-text">Pay with UPI</span>
               </button>
-              <button
-                type="button"
-                className="download-qr-btn"
-                onClick={() => {
-                  window.open(qrSrc, '_blank')
-                }}
-                title="Download QR"
-              >
-                ⬇
-              </button>
             </div>
             <div className="upi-text">
               <div className="upi-note">
@@ -319,6 +357,7 @@ export default function AddFunds() {
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   )

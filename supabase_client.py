@@ -262,42 +262,88 @@ def update_user_wallet(user_id: int, wallet_balance: float) -> None:
         print(f"[SUPABASE] Failed to update user wallet: {resp.status_code} {resp.text}")
 
 
-# ===== Margin fees (global config) =====
+# ===== Margin fees (per-user config) =====
 
 
+def get_margin_fee_by_user(user_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch the margin_fees row for a given user_id."""
+    if not is_enabled():
+        return None
+    params = {"select": "*", "user_id": f"eq.{user_id}"}
+    resp = _request("GET", "/margin_fees", params=params)
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    rows = resp.json() or []
+    return rows[0] if rows else None
+
+
+def upsert_margin_fee_for_user(
+    user_id: int,
+    per_account_fee: float,
+    margin_balance: Optional[float] = None,
+) -> None:
+    """
+    Upsert margin fee config for a specific user into margin_fees table.
+    Table structure: user_id, id, per_account_fee, margin_balance, updated_at
+    """
+    if not is_enabled():
+        return
+    existing = get_margin_fee_by_user(user_id)
+    now_iso = datetime.datetime.utcnow().isoformat()
+    payload: Dict[str, Any] = {
+        "user_id": user_id,
+        "per_account_fee": per_account_fee,
+        "updated_at": now_iso,
+    }
+    if margin_balance is not None:
+        payload["margin_balance"] = margin_balance
+    if existing and "id" in existing:
+        params = {"id": f"eq.{existing['id']}"}
+        resp = _request("PATCH", "/margin_fees", params=params, json=payload)
+    else:
+        resp = _request(
+            "POST",
+            "/margin_fees",
+            json=payload,
+            headers={"Prefer": "return=representation"},
+        )
+    if resp.status_code >= 400:
+        print(f"[SUPABASE] Failed to upsert margin_fees for user {user_id}: {resp.status_code} {resp.text}")
+
+
+# Legacy function for backward compatibility (deprecated)
 def get_margin_fee() -> Optional[Dict[str, Any]]:
-  """Fetch the single row from margin_fees table, if any."""
-  if not is_enabled():
-      return None
-  resp = _request("GET", "/margin_fees", params={"select": "*"})
-  if resp.status_code == 404:
-      return None
-  resp.raise_for_status()
-  rows = resp.json() or []
-  return rows[0] if rows else None
+    """Legacy: Fetch the single row from margin_fees table, if any. DEPRECATED: Use get_margin_fee_by_user instead."""
+    if not is_enabled():
+        return None
+    resp = _request("GET", "/margin_fees", params={"select": "*"})
+    if resp.status_code == 404:
+        return None
+    resp.raise_for_status()
+    rows = resp.json() or []
+    return rows[0] if rows else None
 
 
+# Legacy function for backward compatibility (deprecated)
 def upsert_margin_fee(per_account_fee: float, margin_balance: Optional[float] = None) -> None:
-  """
-  Upsert global margin per-account fee into margin_fees table.
-  Table is treated as single-row config.
-  """
-  if not is_enabled():
-      return
-  existing = get_margin_fee()
-  payload: Dict[str, Any] = {"per_account_fee": per_account_fee}
-  if margin_balance is not None:
-      payload["margin_balance"] = margin_balance
-  if existing and "id" in existing:
-      params = {"id": f"eq.{existing['id']}"}
-      resp = _request("PATCH", "/margin_fees", params=params, json=payload)
-  else:
-      resp = _request(
-          "POST",
-          "/margin_fees",
-          json=payload,
-          headers={"Prefer": "return=representation"},
-      )
-  if resp.status_code >= 400:
-      print(f"[SUPABASE] Failed to upsert margin_fees: {resp.status_code} {resp.text}")
+    """Legacy: Upsert global margin per-account fee. DEPRECATED: Use upsert_margin_fee_for_user instead."""
+    if not is_enabled():
+        return
+    existing = get_margin_fee()
+    payload: Dict[str, Any] = {"per_account_fee": per_account_fee}
+    if margin_balance is not None:
+        payload["margin_balance"] = margin_balance
+    if existing and "id" in existing:
+        params = {"id": f"eq.{existing['id']}"}
+        resp = _request("PATCH", "/margin_fees", params=params, json=payload)
+    else:
+        resp = _request(
+            "POST",
+            "/margin_fees",
+            json=payload,
+            headers={"Prefer": "return=representation"},
+        )
+    if resp.status_code >= 400:
+        print(f"[SUPABASE] Failed to upsert margin_fees: {resp.status_code} {resp.text}")
 

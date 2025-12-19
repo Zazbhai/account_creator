@@ -172,24 +172,24 @@ def load_api_settings() -> dict:
     return data
 
 
-def get_margin_per_account() -> float:
+def get_margin_per_account(user_id: int) -> float:
     """
-    Resolve the current margin fee per account, in rupees.
+    Resolve the margin fee per account for a specific user, in rupees.
     Preference order:
-      1) Supabase margin_fees table (per_account_fee)
-      2) Local margin_fees.json file
+      1) Supabase margin_fees table (per_account_fee for user_id)
+      2) Local margin_fees.json file (legacy fallback)
       3) DEFAULT_MARGIN_PER_ACCOUNT constant
     """
     fee = DEFAULT_MARGIN_PER_ACCOUNT
 
-    # Supabase source
+    # Supabase source - per-user margin fees
     if supabase_client.is_enabled():
         try:
-            row = supabase_client.get_margin_fee()
+            row = supabase_client.get_margin_fee_by_user(user_id)
             if row and row.get("per_account_fee") is not None:
                 fee = float(row["per_account_fee"])
         except Exception as e:
-            print(f"[WARN] Supabase get_margin_fee failed, using fallback: {e}")
+            print(f"[WARN] Supabase get_margin_fee_by_user failed for user {user_id}, using fallback: {e}")
 
     # Local file fallback if Supabase not configured or returned nothing
     if (not supabase_client.is_enabled()) or (fee == DEFAULT_MARGIN_PER_ACCOUNT):
@@ -211,6 +211,23 @@ def get_margin_per_account() -> float:
         fee = DEFAULT_MARGIN_PER_ACCOUNT
 
     return fee
+
+
+def get_user_margin_balance(user_id: int) -> float:
+    """
+    Get the margin_balance for a specific user from margin_fees table.
+    Falls back to wallet_balance from users table if margin_fees row doesn't exist.
+    """
+    if supabase_client.is_enabled():
+        try:
+            row = supabase_client.get_margin_fee_by_user(user_id)
+            if row and row.get("margin_balance") is not None:
+                return float(row["margin_balance"])
+        except Exception as e:
+            print(f"[WARN] Supabase get_margin_fee_by_user failed for user {user_id}: {e}")
+    
+    # Fallback to wallet_balance from users table
+    return get_wallet_balance_for_user(user_id)
 
 
 def get_total_margin_balance() -> float:
@@ -311,9 +328,20 @@ def get_user_by_username(username):
     return None
 
 def create_user(username, password_hash, role="user", expiry_days=None):
+    user_id = None
     if supabase_client.is_enabled():
         try:
             user_id = supabase_client.create_user(username, password_hash, role, expiry_days)
+            # Create default margin_fees row for the new user
+            if user_id:
+                try:
+                    supabase_client.upsert_margin_fee_for_user(
+                        user_id=user_id,
+                        per_account_fee=DEFAULT_MARGIN_PER_ACCOUNT,
+                        margin_balance=0.0,
+                    )
+                except Exception as e:
+                    print(f"[WARN] Failed to create default margin_fees for user {user_id}: {e}")
             return user_id
         except Exception as e:
             print(f"[WARN] Supabase create_user failed, falling back to file: {e}")
@@ -350,6 +378,9 @@ MAX_LOG_BUFFER_SIZE = 10000
 # Worker process tracking
 user_processes = {}
 user_processes_lock = threading.Lock()
+# Stop flags for each user
+user_stop_flags = {}
+user_stop_flags_lock = threading.Lock()
 
 def login_required(f):
     @wraps(f)
@@ -513,9 +544,14 @@ def api_funds():
 @app.route('/api/margin-fees', methods=['GET'])
 @login_required
 def api_margin_fees():
-    """Get the current margin per-account fee (global config)."""
-    fee = get_margin_per_account()
-    return jsonify({"per_account_fee": round(fee, 4)})
+    """Get the current margin per-account fee and margin balance for the current user."""
+    user_id = session.get('user_id')
+    fee = get_margin_per_account(user_id)
+    margin_balance = get_user_margin_balance(user_id)
+    return jsonify({
+        "per_account_fee": round(fee, 4),
+        "margin_balance": round(margin_balance, 2),
+    })
 
 @app.route('/api/logs', methods=['GET'])
 @login_required
@@ -750,41 +786,43 @@ def run():
             400,
         )
 
-    # Second, enforce margin-fees buffer: after paying provider price for all
-    # requested accounts, there should still be margin_per_account available
-    # per account as safety (configurable in margin_fees).
-    if balance is not None and price:
-        margin_per_account = get_margin_per_account()
-        required_for_accounts = total_accounts * price
-        remaining_after_accounts = balance - required_for_accounts
-        required_margin = total_accounts * margin_per_account
+    # Second, enforce margin-fees buffer: check that user has enough margin_balance
+    # in margin_fees table (separate from SMS provider balance).
+    margin_per_account = get_margin_per_account(user_id)
+    required_margin = total_accounts * margin_per_account
+    
+    # Get margin_balance from margin_fees table
+    margin_balance = get_user_margin_balance(user_id)
+    
+    if margin_balance < required_margin:
+        # How much extra margin balance is needed
+        extra_needed = max(0.0, round(required_margin - margin_balance, 2))
 
-        if remaining_after_accounts < required_margin:
-            # How much extra balance is needed to satisfy margin
-            extra_needed = max(0.0, round(required_margin - remaining_after_accounts, 2))
-            total_required_balance = required_for_accounts + required_margin
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"Insufficient margin fees. For {total_accounts} account(s) you need at least "
+                        f"₹{required_margin:.2f} as margin buffer "
+                        f"(₹{margin_per_account:.2f} per account). "
+                        f"Your current margin balance is ₹{margin_balance:.2f}."
+                    ),
+                    "amount_needed": extra_needed,
+                    "required_margin": round(required_margin, 2),
+                    "margin_balance": round(margin_balance, 2),
+                    "margin_per_account": round(margin_per_account, 4),
+                }
+            ),
+            400,
+        )
 
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            f"Insufficient margin fees. For {total_accounts} account(s) you need at least "
-                            f"₹{required_margin:.2f} as margin buffer "
-                            f"(₹{margin_per_account:.2f} per account)."
-                        ),
-                        "amount_needed": extra_needed,
-                        "required_margin": round(required_margin, 2),
-                        "required_balance": round(total_required_balance, 2),
-                        "balance": balance,
-                        "margin_per_account": round(margin_per_account, 4),
-                    }
-                ),
-                400,
-            )
-
+    # Get retry_failed flag from form data
+    retry_failed_raw = request.form.get("retry_failed", "1").strip().lower()
+    retry_failed = retry_failed_raw in ("1", "true", "on", "yes")
+    
     thread = threading.Thread(
         target=run_parallel_sessions,
-        args=(total_accounts, max_parallel, user_id, use_used_account),
+        args=(total_accounts, max_parallel, user_id, use_used_account, retry_failed),
         daemon=True
     )
     thread.start()
@@ -836,6 +874,34 @@ def api_add_funds():
     # Credit exactly the paid amount, regardless of the requested_amount
     new_balance = add_funds_to_user(user_id, paid_amount)
 
+    # Update margin_balance in margin_fees table by adding the paid amount to existing balance
+    if supabase_client.is_enabled():
+        try:
+            # Get current margin_balance and per_account_fee to preserve them
+            current_fee = get_margin_per_account(user_id)
+            
+            # Get current margin_balance from margin_fees table (not wallet_balance)
+            current_margin_balance = 0.0
+            try:
+                row = supabase_client.get_margin_fee_by_user(user_id)
+                if row and row.get("margin_balance") is not None:
+                    current_margin_balance = float(row["margin_balance"])
+            except Exception:
+                # If row doesn't exist, start with 0.0
+                current_margin_balance = 0.0
+            
+            # Add the paid amount to existing margin_balance
+            new_margin_balance = current_margin_balance + paid_amount
+            
+            # Upsert will create the row if it doesn't exist, or update if it does
+            supabase_client.upsert_margin_fee_for_user(
+                user_id=user_id,
+                per_account_fee=current_fee,
+                margin_balance=new_margin_balance,
+            )
+        except Exception as e:
+            print(f"[WARN] Failed to update margin_fees for user {user_id}: {e}")
+
     return jsonify(
         {
             "success": True,
@@ -850,15 +916,27 @@ def api_add_funds():
 def api_stop():
     """Stop all workers for current user."""
     user_id = session.get('user_id')
+    
+    # Set stop flag
+    with user_stop_flags_lock:
+        user_stop_flags[user_id] = True
+    
+    # Kill all processes
     with user_processes_lock:
         processes = user_processes.get(user_id, [])
         for process in processes:
             try:
-                process.kill()
-            except Exception:
-                pass
+                if process.poll() is None:  # Process is still running
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()  # Force kill if terminate didn't work
+            except Exception as e:
+                print(f"[WARN] Error stopping process: {e}")
         user_processes[user_id] = []
     
+    # Remove completion flag file
     LOG_DIR = Path("logs")
     completion_file = LOG_DIR / f"user_{user_id}_running.flag"
     try:
@@ -954,11 +1032,13 @@ def admin_api_settings():
 @admin_required
 def admin_margin_fees():
     """
-    Admin margin fees config: global margin per-account fee in rupees.
-    Backed by Supabase margin_fees table (when enabled) and local margin_fees.json as backup.
+    Admin margin fees config: returns admin's per-account fee and total margin balance.
+    Note: This endpoint is for admin's own margin fee. For managing other users' fees, use /api/admin/users.
     """
     if request.method == 'GET':
-        fee = get_margin_per_account()
+        # Get admin's own margin fee
+        admin_user_id = session.get('user_id')
+        fee = get_margin_per_account(admin_user_id) if admin_user_id else DEFAULT_MARGIN_PER_ACCOUNT
         total_margin = get_total_margin_balance()
         return jsonify(
             {
@@ -999,6 +1079,19 @@ def admin_margin_fees():
 def admin_users():
     if request.method == 'GET':
         users = load_users()
+        # Enrich each user with margin fee data
+        for user in users:
+            user_id = user.get('id')
+            if user_id:
+                try:
+                    fee = get_margin_per_account(user_id)
+                    margin_balance = get_user_margin_balance(user_id)
+                    user['per_account_fee'] = round(fee, 4)
+                    user['margin_balance'] = round(margin_balance, 2)
+                except Exception as e:
+                    print(f"[WARN] Failed to load margin fees for user {user_id}: {e}")
+                    user['per_account_fee'] = DEFAULT_MARGIN_PER_ACCOUNT
+                    user['margin_balance'] = 0.0
         return jsonify({"users": users})
     else:
         username = request.json.get('username', '').strip()
@@ -1089,6 +1182,49 @@ def update_user_expiry(user_id):
     save_users(users)
 
     return jsonify({"success": True, "expiry_date": new_iso})
+
+@app.route('/api/admin/users/<int:user_id>/margin-fee', methods=['PATCH'])
+@admin_required
+def update_user_margin_fee(user_id):
+    """
+    Update a user's per_account_fee in margin_fees table.
+    Only per_account_fee can be edited; margin_balance is read-only (synced from wallet_balance).
+    """
+    data = request.json or {}
+    raw_fee = data.get("per_account_fee")
+    
+    if raw_fee is None:
+        return jsonify({"error": "per_account_fee is required"}), 400
+    
+    try:
+        fee = float(raw_fee)
+    except (TypeError, ValueError):
+        return jsonify({"error": "per_account_fee must be a number"}), 400
+    
+    if fee <= 0:
+        return jsonify({"error": "per_account_fee must be greater than zero"}), 400
+    
+    # Verify user exists
+    user = _find_user_by_id(user_id)
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Get current margin_balance to preserve it
+    margin_balance = get_user_margin_balance(user_id)
+    
+    # Update in Supabase if available
+    if supabase_client.is_enabled():
+        try:
+            supabase_client.upsert_margin_fee_for_user(
+                user_id=user_id,
+                per_account_fee=fee,
+                margin_balance=margin_balance,
+            )
+        except Exception as e:
+            print(f"[WARN] Supabase upsert_margin_fee_for_user failed for user {user_id}: {e}")
+            return jsonify({"error": f"Failed to update margin fee: {e}"}), 500
+    
+    return jsonify({"success": True, "per_account_fee": round(fee, 4)})
 
 # WebSocket Events
 @socketio.on('connect')
@@ -1203,26 +1339,34 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account):
             if user_id in user_processes:
                 user_processes[user_id] = [p for p in user_processes[user_id] if p.poll() is None]
 
-def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_account):
+def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_account, retry_failed=True):
     """Run sessions in batches."""
     LOG_DIR = Path("logs")
     LOG_DIR.mkdir(exist_ok=True)
     clear_user_logs(user_id)
     completion_file = LOG_DIR / f"user_{user_id}_running.flag"
     
+    # Clear stop flag for this user
+    with user_stop_flags_lock:
+        user_stop_flags[user_id] = False
+    
     try:
+        # Delete ALL files in logs folder before starting a new batch
         for log_file in LOG_DIR.glob("*"):
-            if log_file.is_file() and log_file.name != completion_file.name:
+            if log_file.is_file():
                 try:
                     log_file.unlink()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[WARN] Failed to delete {log_file.name}: {e}")
+        
+        # Create fresh latest_logs.txt
         latest_log = LOG_DIR / "latest_logs.txt"
         start_msg = "[INFO] Starting new batch..."
         add_log(user_id, start_msg)
         with open(latest_log, 'w', encoding='utf-8') as f:
             f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {start_msg}\n")
         
+        # Create completion flag file
         with open(completion_file, 'w', encoding='utf-8') as f:
             f.write(f"running\n")
     except Exception as e:
@@ -1230,37 +1374,79 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
     
     remaining = total_accounts
     session_num = 1
+    failed_sessions = []  # Track failed sessions for retry
     
     try:
         while remaining > 0:
+            # Check if stop was requested
+            with user_stop_flags_lock:
+                if user_stop_flags.get(user_id, False):
+                    add_log(user_id, "[INFO] Stop requested. Stopping batch execution.")
+                    break
             batch_size = min(max_parallel, remaining)
             futures = []
+            session_map = {}  # Map future to session number
+            
             with ThreadPoolExecutor(max_workers=max_parallel) as executor:
                 for i in range(batch_size):
                     current_session = session_num + i
                     if i == 0:
-                        futures.append(
-                            executor.submit(
-                                run_account_creator, current_session, total_accounts, user_id, use_used_account
-                            )
+                        future = executor.submit(
+                            run_account_creator, current_session, total_accounts, user_id, use_used_account
                         )
+                        futures.append(future)
+                        session_map[future] = current_session
                     else:
                         time.sleep(2)
-                        futures.append(
-                            executor.submit(
-                                run_account_creator, current_session, total_accounts, user_id, use_used_account
-                            )
+                        future = executor.submit(
+                            run_account_creator, current_session, total_accounts, user_id, use_used_account
                         )
+                        futures.append(future)
+                        session_map[future] = current_session
                 
                 for future in as_completed(futures):
+                    # Check stop flag again
+                    with user_stop_flags_lock:
+                        if user_stop_flags.get(user_id, False):
+                            break
+                    
+                    session_num_for_future = session_map.get(future, session_num)
                     try:
                         future.result()
+                        # Session completed successfully
                     except Exception as e:
-                        error_msg = f"[ERROR] Batch session error: {e}"
+                        error_msg = f"[ERROR] Session {session_num_for_future} failed: {e}"
                         add_log(user_id, error_msg)
+                        # Track failed session for retry if enabled
+                        if retry_failed:
+                            failed_sessions.append(session_num_for_future)
+            
+            # Check stop flag before continuing
+            with user_stop_flags_lock:
+                if user_stop_flags.get(user_id, False):
+                    break
             
             session_num += batch_size
             remaining -= batch_size
+            
+            # If retry is enabled and we have failed sessions, retry them
+            if retry_failed and failed_sessions:
+                retry_count = len(failed_sessions)
+                add_log(user_id, f"[INFO] Retrying {retry_count} failed session(s)...")
+                # Retry failed sessions one by one
+                for failed_session in failed_sessions:
+                    # Check stop flag before each retry
+                    with user_stop_flags_lock:
+                        if user_stop_flags.get(user_id, False):
+                            break
+                    try:
+                        run_account_creator(failed_session, total_accounts, user_id, use_used_account)
+                        add_log(user_id, f"[INFO] Retry session {failed_session} completed successfully")
+                    except Exception as e:
+                        error_msg = f"[ERROR] Retry session {failed_session} failed again: {e}"
+                        add_log(user_id, error_msg)
+                # Clear failed sessions after retry attempt
+                failed_sessions = []
         
         completion_msg = "[INFO] All workers completed!"
         add_log(user_id, completion_msg)

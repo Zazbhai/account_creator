@@ -73,12 +73,14 @@ export default function Logs() {
       })
 
       const files = res.data.files || []
+      // Filter out latest_logs.txt - it's only shown in Launcher section
+      const filteredFiles = files.filter(f => f.name !== 'latest_logs.txt')
 
-      setLogFiles(files)
+      setLogFiles(filteredFiles)
 
-      if (files.length > 0) {
+      if (filteredFiles.length > 0) {
 
-        const firstName = files[0].name
+        const firstName = filteredFiles[0].name
 
         setSelectedLog(firstName)
 

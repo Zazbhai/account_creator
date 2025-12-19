@@ -48,6 +48,8 @@ export default function Launcher() {
 
   const [amountNeeded, setAmountNeeded] = useState(null)
   const [useUsedAccount, setUseUsedAccount] = useState(true)
+  const [retryFailed, setRetryFailed] = useState(true)
+  const [marginBalance, setMarginBalance] = useState(null)
 
 
 
@@ -88,12 +90,14 @@ export default function Launcher() {
         setImapReady(true)
 
         await loadBalance()
+        await loadMarginBalance()
 
         await checkWorkerStatus()
 
         intervalId = setInterval(() => {
 
           checkWorkerStatus()
+          loadMarginBalance()
 
         }, 2000)
 
@@ -231,6 +235,23 @@ export default function Launcher() {
 
   }
 
+  const loadMarginBalance = async () => {
+    try {
+      const response = await axios.get('/api/margin-fees', {
+        withCredentials: true,
+        skipLoader: true,
+      })
+      if (typeof response.data.margin_balance === 'number') {
+        setMarginBalance(response.data.margin_balance)
+      } else {
+        setMarginBalance(0)
+      }
+    } catch (error) {
+      console.error('Error loading margin balance:', error)
+      setMarginBalance(0)
+    }
+  }
+
 
 
   const loadLatestLogs = async ({ silent = false } = {}) => {
@@ -341,6 +362,7 @@ export default function Launcher() {
 
       formData.append('max_parallel', maxParallel)
       formData.append('use_used_account', useUsedAccount ? '1' : '0')
+      formData.append('retry_failed', retryFailed ? '1' : '0')
 
 
 
@@ -355,6 +377,12 @@ export default function Launcher() {
 
 
       setRunning(true)
+      // Update balance, price, capacity, and margin balance after starting
+      await loadBalance()
+      await loadMarginBalance()
+      setTimeout(() => {
+        loadLatestLogs({ silent: true })
+      }, 500)
 
     } catch (error) {
 
@@ -385,6 +413,7 @@ export default function Launcher() {
       await axios.post('/api/stop', {}, { withCredentials: true })
 
       setRunning(false)
+      loadMarginBalance()
 
     } catch (error) {
 
@@ -404,13 +433,19 @@ export default function Launcher() {
 
       <div className="margin-fees-row">
         <span className="margin-fees-label">Margin fees balance</span>
-        <div
-          className="margin-fees-pill"
-          onClick={() => navigate('/funds')}
-        >
-          <span className="margin-fees-amount">₹0.00</span>
-          <span className="margin-fees-plus">+</span>
-        </div>
+        {marginBalance === null && loading ? (
+          <SkeletonPill />
+        ) : (
+          <div
+            className="margin-fees-pill"
+            onClick={() => navigate('/funds')}
+          >
+            <span className="margin-fees-amount">
+              ₹{marginBalance !== null ? marginBalance.toFixed(2) : '0.00'}
+            </span>
+            <span className="margin-fees-plus">+</span>
+          </div>
+        )}
       </div>
 
 
@@ -491,17 +526,33 @@ export default function Launcher() {
 
         </div>
 
-        <div className="form-group">
-          <label htmlFor="use_used_account">
+        <div className="form-group toggle-group">
+          <label htmlFor="use_used_account" className="toggle-label">
             <input
               id="use_used_account"
               type="checkbox"
+              className="toggle-input"
               checked={useUsedAccount}
               onChange={(e) => setUseUsedAccount(e.target.checked)}
               disabled={running || !imapReady}
-              style={{ marginRight: '8px' }}
             />
-            Use already registered accounts (recovery mode)
+            <span className="toggle-slider"></span>
+            <span className="toggle-text">Recovery Mode</span>
+          </label>
+        </div>
+
+        <div className="form-group toggle-group">
+          <label htmlFor="retry_failed" className="toggle-label">
+            <input
+              id="retry_failed"
+              type="checkbox"
+              className="toggle-input"
+              checked={retryFailed}
+              onChange={(e) => setRetryFailed(e.target.checked)}
+              disabled={running || !imapReady}
+            />
+            <span className="toggle-slider"></span>
+            <span className="toggle-text">Retry Failed</span>
           </label>
         </div>
 
@@ -529,7 +580,11 @@ export default function Launcher() {
 
         </div>
 
-        <button type="submit" disabled={running || loading} className={running ? 'running' : ''}>
+        <button 
+          type="submit" 
+          disabled={running || loading || capacity === null || marginBalance === null} 
+          className={running ? 'running' : ''}
+        >
 
           {running ? (
 
