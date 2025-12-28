@@ -37,8 +37,8 @@ python app_backend.py
 ```
 
 The app will be available at:
-- Frontend (development): http://localhost:3000
-- Backend API: http://localhost:5000
+- Frontend (development): http://localhost:7333
+- Backend API: http://localhost:6333
 
 ## Features
 
@@ -89,7 +89,7 @@ npm run build
 python app_backend.py
 ```
 
-The app will be available at http://localhost:5000
+The app will be available at http://localhost:6333
 
 ## WebSocket Events
 

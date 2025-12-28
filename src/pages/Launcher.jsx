@@ -9,6 +9,9 @@ import { useSocket } from '../hooks/useSocket'
 import { useAuth } from '../hooks/useAuth'
 
 import { Skeleton, SkeletonPill } from '../components/Skeleton'
+import StatusPopup from '../components/StatusPopup'
+import { playStartSound, playCompletionSound } from '../utils/sounds'
+import { requestNotificationPermission, notifyAccountCompletion } from '../utils/notifications'
 
 import './Launcher.css'
 
@@ -33,10 +36,36 @@ export default function Launcher() {
   const [logs, setLogs] = useState([])
 
   const [running, setRunning] = useState(false)
+  const [starting, setStarting] = useState(false)  // Loading state when starting account creation
 
-  const [totalAccounts, setTotalAccounts] = useState(10)
+  // Load configs from localStorage on mount
+  const loadConfigsFromStorage = () => {
+    try {
+      const saved = localStorage.getItem('launcher_configs')
+      if (saved) {
+        const configs = JSON.parse(saved)
+        return {
+          totalAccounts: configs.totalAccounts ?? 10,
+          maxParallel: configs.maxParallel ?? 4,
+          useUsedAccount: configs.useUsedAccount ?? true,
+          retryFailed: configs.retryFailed ?? true,
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load configs from localStorage:', e)
+    }
+    return {
+      totalAccounts: 10,
+      maxParallel: 4,
+      useUsedAccount: true,
+      retryFailed: true,
+    }
+  }
 
-  const [maxParallel, setMaxParallel] = useState(4)
+  const savedConfigs = loadConfigsFromStorage()
+  const [totalAccounts, setTotalAccounts] = useState(savedConfigs.totalAccounts)
+
+  const [maxParallel, setMaxParallel] = useState(savedConfigs.maxParallel)
 
   const [popup, setPopup] = useState({ type: null, message: '' })
 
@@ -45,11 +74,28 @@ export default function Launcher() {
   const [showImapPopup, setShowImapPopup] = useState(false)
 
   const [showBalancePopup, setShowBalancePopup] = useState(false)
+  const [showNewAccountsWarning, setShowNewAccountsWarning] = useState(false)
 
   const [amountNeeded, setAmountNeeded] = useState(null)
-  const [useUsedAccount, setUseUsedAccount] = useState(true)
-  const [retryFailed, setRetryFailed] = useState(true)
+  const [useUsedAccount, setUseUsedAccount] = useState(savedConfigs.useUsedAccount)
+  const [retryFailed, setRetryFailed] = useState(savedConfigs.retryFailed)
   const [marginBalance, setMarginBalance] = useState(null)
+  const [perAccountFee, setPerAccountFee] = useState(null)  // Per account margin fee
+
+  // Save configs to localStorage whenever they change
+  useEffect(() => {
+    try {
+      const configs = {
+        totalAccounts,
+        maxParallel,
+        useUsedAccount,
+        retryFailed,
+      }
+      localStorage.setItem('launcher_configs', JSON.stringify(configs))
+    } catch (e) {
+      console.error('Failed to save configs to localStorage:', e)
+    }
+  }, [totalAccounts, maxParallel, useUsedAccount, retryFailed])
 
 
 
@@ -57,7 +103,14 @@ export default function Launcher() {
 
     let intervalId = null
 
-
+    // Request notification permission on mount
+    requestNotificationPermission().then(granted => {
+      if (granted) {
+        console.log('[DEBUG] [Launcher] Notification permission granted')
+      } else {
+        console.log('[DEBUG] [Launcher] Notification permission not granted')
+      }
+    })
 
     const init = async () => {
 
@@ -169,11 +222,54 @@ export default function Launcher() {
 
       }
 
+      const handleAccountSummary = (data) => {
+        console.log('[DEBUG] [Launcher] Socket event: account_summary', data)
+        
+        const { success, failed, total } = data || {}
+        const successCount = success || 0
+        const failedCount = failed || 0
+        const totalCount = total || 0
+        
+        // Play completion sound
+        playCompletionSound()
+        
+        // Show browser notification
+        notifyAccountCompletion(successCount, failedCount, totalCount)
+        
+        // Format message with line breaks
+        const summaryMessage = `Account Creation Complete!\n\n✅ Successful: ${successCount}\n❌ Failed: ${failedCount}\n📊 Total: ${totalCount}`
+        
+        // Show popup with summary
+        // Use 'success' type if all succeeded (failed === 0), otherwise use 'error' type
+        setPopup({
+          type: failedCount === 0 ? 'success' : 'error',
+          message: summaryMessage
+        })
+        
+        console.log('[DEBUG] [Launcher] Showing account summary popup:', { successCount, failedCount, totalCount })
+      }
 
+      const handleNoNumbers = (data) => {
+        console.log('[DEBUG] [Launcher] Socket event: no_numbers', data)
+        
+        const message = data?.message || 'No numbers available right now. Please try again after some time.'
+        
+        // Show error popup
+        setPopup({
+          type: 'error',
+          message: message
+        })
+        
+        console.log('[DEBUG] [Launcher] Showing NO_NUMBERS popup:', message)
+      }
 
       socket.on('balance', handleBalance)
 
       socket.on('worker_status', handleWorkerStatus)
+      
+      socket.on('account_summary', handleAccountSummary)
+      
+      socket.on('no_numbers', handleNoNumbers)
 
 
 
@@ -182,6 +278,10 @@ export default function Launcher() {
         socket.off('balance', handleBalance)
 
         socket.off('worker_status', handleWorkerStatus)
+        
+        socket.off('account_summary', handleAccountSummary)
+        
+        socket.off('no_numbers', handleNoNumbers)
 
       }
 
@@ -198,11 +298,17 @@ export default function Launcher() {
       const response = await axios.get('/api/balance', { withCredentials: true })
       console.log('[DEBUG] [Launcher] GET /api/balance response:', response.data)
 
-      setBalance(response.data.balance)
-
-      setPrice(response.data.price)
-
-      setCapacity(response.data.capacity)
+      // Handle balance - ensure it's a number or null
+      const balanceValue = typeof response.data.balance === 'number' ? response.data.balance : null
+      setBalance(balanceValue)
+      
+      // Handle price - ensure it's a number or null
+      const priceValue = typeof response.data.price === 'number' ? response.data.price : null
+      setPrice(priceValue)
+      
+      // Handle capacity - ensure it's a number or null
+      const capacityValue = typeof response.data.capacity === 'number' ? response.data.capacity : null
+      setCapacity(capacityValue)
 
     } catch (error) {
       console.error('[DEBUG] [Launcher] Error in loadBalance:', error)
@@ -255,6 +361,10 @@ export default function Launcher() {
       } else {
         setMarginBalance(0)  // Set to 0 instead of null so skeleton doesn't show
       }
+      // Also store per_account_fee for calculations
+      if (typeof response.data.per_account_fee === 'number') {
+        setPerAccountFee(response.data.per_account_fee)
+      }
     } catch (error) {
       console.error('[DEBUG] [Launcher] Error loading margin balance:', error)
       console.error('[DEBUG] [Launcher] Error response:', error.response?.data)
@@ -285,9 +395,183 @@ export default function Launcher() {
 
       const content = res.data.content || ''
 
-      const lines = content.split('\n').filter((line) => line.trim() !== '')
+      const allLines = content.split('\n').filter((line) => line.trim() !== '')
+      
+      // Transform technical logs into user-friendly messages
+      const filteredLines = []
+      let lastWasWaitingForOtp = false
+      let lastWasRequestingNumber = false
+      let inApiRequestBlock = false
+      
+      for (let i = 0; i < allLines.length; i++) {
+        const line = allLines[i]
+        const trimmed = line.trim()
+        
+        // Skip all API request detail blocks
+        if (trimmed.includes('[CALLER API REQUEST]') || trimmed.includes('========================================================================')) {
+          inApiRequestBlock = true
+          continue
+        }
+        
+        if (inApiRequestBlock) {
+          if (trimmed === '' || (trimmed.startsWith('[') && !trimmed.includes('CALLER API') && !trimmed.includes('INFO') && !trimmed.includes('ERROR') && !trimmed.includes('WARN'))) {
+            inApiRequestBlock = false
+          } else {
+            continue
+          }
+        }
+        
+        // Skip all technical API details
+        if (trimmed.startsWith('URL:') || trimmed.startsWith('Action:') || trimmed.startsWith('Service:') || 
+            trimmed.startsWith('[CONFIG]') || trimmed.startsWith('Params:') || trimmed.startsWith('Full URL') ||
+            trimmed.startsWith('API Key:') || trimmed.startsWith('[OK] Status:') || trimmed.startsWith('Duration:') ||
+            trimmed.startsWith('Response Length:') || trimmed.startsWith('Response:') && !trimmed.match(/\[(INFO|ERROR|WARN|DEBUG)\]/) ||
+            trimmed.includes('Environment variables') || trimmed.includes('Updated API_KEY') || trimmed.includes('Updated BASE_URL') ||
+            trimmed.includes('Updated SERVICE') || trimmed.includes('Updated OPERATOR') || trimmed.includes('Updated COUNTRY') ||
+            trimmed.includes('Final caller configuration') || trimmed.includes('BASE_URL:') || trimmed.includes('SERVICE:') ||
+            trimmed.includes('OPERATOR:') || trimmed.includes('COUNTRY:') || trimmed.includes('WAIT_FOR_OTP:') ||
+            trimmed.includes('WAIT_FOR_SECOND_OTP:') || trimmed.includes('API_KEY:') || trimmed.includes('Signaling backend') ||
+            trimmed.includes('Backend stop response') || trimmed.includes('NUMBER_QUEUE') || trimmed.includes('Enqueued') ||
+            trimmed.includes('TIMEOUT] Signaling') || trimmed.includes('TIMEOUT] Backend stop')) {
+          continue
+        }
+        
+        // Transform user-friendly messages
+        let friendlyMessage = null
+        
+        // Starting batch
+        if (trimmed.includes('Starting new batch')) {
+          friendlyMessage = '[INFO] Starting account creation...'
+        }
+        // Launching browser
+        else if (trimmed.includes('[DEBUG] Launching browser')) {
+          friendlyMessage = '[INFO] Opening browser...'
+        }
+        // Generated email
+        else if (trimmed.includes('Generated Flipkart email:')) {
+          const emailMatch = trimmed.match(/Generated Flipkart email: (.+)/)
+          if (emailMatch) {
+            friendlyMessage = `[INFO] Generated email: ${emailMatch[1]}`
+          }
+        }
+        // Fetching number
+        else if (trimmed.includes('[DEBUG] Fetching number from API') || trimmed.includes('Fetching number from API')) {
+          if (!lastWasRequestingNumber) {
+            friendlyMessage = '[INFO] Requesting phone number...'
+            lastWasRequestingNumber = true
+          } else {
+            continue
+          }
+        }
+        // Got number
+        else if (trimmed.includes('[DEBUG] [OK] Got number:') || trimmed.includes('Got number:')) {
+          const phoneMatch = trimmed.match(/phone=(\d+)/) || trimmed.match(/phone:(\d+)/)
+          if (phoneMatch) {
+            friendlyMessage = `[INFO] Phone number received: ${phoneMatch[1]}`
+          } else {
+            friendlyMessage = '[INFO] Phone number received'
+          }
+          lastWasRequestingNumber = false
+        }
+        // Navigating to signup
+        else if (trimmed.includes('Navigating to Flipkart signup page')) {
+          friendlyMessage = '[INFO] Opening signup page...'
+        }
+        // Page loaded
+        else if (trimmed.includes('[DEBUG] [OK] Page loaded')) {
+          friendlyMessage = '[INFO] Page loaded'
+        }
+        // Filling phone number
+        else if (trimmed.includes('Filling phone number:') || trimmed.includes('[DEBUG] [OK] Phone number filled')) {
+          const phoneMatch = trimmed.match(/Filling phone number: (\d+)/)
+          if (phoneMatch) {
+            friendlyMessage = `[INFO] Entering phone number: ${phoneMatch[1]}`
+          } else if (trimmed.includes('[OK] Phone number filled')) {
+            friendlyMessage = '[INFO] Phone number entered'
+          }
+        }
+        // Waiting for OTP / OTP received
+        else if (trimmed.includes('getStatus') || trimmed.includes('get_otp') || trimmed.includes('STATUS_WAIT_CODE') ||
+                 trimmed.includes('Polling for OTP') || trimmed.includes('Fetching OTP')) {
+          if (!lastWasWaitingForOtp) {
+            friendlyMessage = '[INFO] Waiting for OTP...'
+            lastWasWaitingForOtp = true
+          } else {
+            continue
+          }
+        }
+        // Got OTP
+        else if (trimmed.includes('[DEBUG] [OK] Got OTP:') || trimmed.includes('Got OTP:')) {
+          const otpMatch = trimmed.match(/Got OTP: (\d+)/)
+          if (otpMatch) {
+            friendlyMessage = `[INFO] OTP received: ${otpMatch[1]}`
+          } else {
+            friendlyMessage = '[INFO] OTP received'
+          }
+          lastWasWaitingForOtp = false
+        }
+        // OTP timeout
+        else if (trimmed.includes('OTP timeout') || trimmed.includes('TIMEOUT]')) {
+          friendlyMessage = '[ERROR] OTP timeout - account creation stopped'
+          lastWasWaitingForOtp = false
+        }
+        // Number canceled
+        else if (trimmed.includes('canceled') || trimmed.includes('ACCESS_CANCEL')) {
+          friendlyMessage = '[INFO] Number canceled'
+        }
+        // Already registered
+        else if (trimmed.includes('already registered') || trimmed.includes('AlreadyRegisteredError')) {
+          friendlyMessage = '[WARN] Phone number already registered'
+        }
+        // Login successful / account created
+        else if (trimmed.includes('Recovery completed') || trimmed.includes('completed! Closing browser') || 
+                 trimmed.includes('Account created successfully') || trimmed.includes('Login successful')) {
+          friendlyMessage = '[INFO] Account created successfully!'
+        }
+        // Error messages
+        else if (trimmed.includes('[ERROR]') || trimmed.includes('Exception occurred')) {
+          // Skip technical error details, show simplified messages
+          if (trimmed.includes('Failed to get number')) {
+            friendlyMessage = '[ERROR] Failed to get phone number'
+          } else if (trimmed.includes('Failed to retrieve OTP')) {
+            friendlyMessage = '[ERROR] OTP not received'
+          } else if (trimmed.includes('OTP is incorrect')) {
+            friendlyMessage = '[ERROR] Invalid OTP'
+          } else if (trimmed.includes('Number was canceled')) {
+            friendlyMessage = '[INFO] Number was canceled'
+          } else if (trimmed.includes('timeout')) {
+            friendlyMessage = '[ERROR] Request timeout'
+          } else if (trimmed.includes('NO_NUMBERS')) {
+            friendlyMessage = '[ERROR] No phone numbers available'
+          } else if (trimmed.includes('All workers completed')) {
+            friendlyMessage = '[INFO] All workers completed!'
+          } else if (!trimmed.includes('[DEBUG]') && !trimmed.includes('Environment') && !trimmed.includes('CONFIG')) {
+            // Only show non-debug errors
+            friendlyMessage = trimmed
+          } else {
+            continue
+          }
+        }
+        // Skip all DEBUG messages except important ones
+        else if (trimmed.includes('[DEBUG]') && !trimmed.includes('[OK]')) {
+          continue
+        }
+        // Keep INFO, WARN, ERROR messages that aren't filtered above
+        else if (trimmed.match(/\[(INFO|WARN|ERROR)\]/) && !trimmed.includes('CALLER API') && 
+                 !trimmed.includes('Environment') && !trimmed.includes('CONFIG')) {
+          friendlyMessage = trimmed
+        }
+        // Skip everything else that's technical
+        else {
+          continue
+        }
+        
+        if (friendlyMessage) {
+          filteredLines.push(friendlyMessage)
+        }
+      }
 
-      setLogs(lines)
+      setLogs(filteredLines)
 
 
 
@@ -340,11 +624,12 @@ export default function Launcher() {
 
     loadLatestLogs()
 
+    // Optimize for 4 vCPU, 16GB RAM: Increase log polling interval to reduce CPU/network load
     const id = setInterval(() => {
 
       loadLatestLogs({ silent: true })
 
-    }, 2000)
+    }, 3000)  // Increased from 2000ms to 3000ms
 
     return () => clearInterval(id)
 
@@ -366,11 +651,23 @@ export default function Launcher() {
 
     }
 
-    setError('')
+    // Set starting state immediately for visual feedback
+    setStarting(true)
+    setPopup({ type: null, message: '' })
 
     setLogs([])
 
+    // Show skeleton loading by setting values to null, then refresh from backend
+    setBalance(null)
+    setCapacity(null)
+    setMarginBalance(null)
+    setPrice(null)
 
+    // Auto-hide loading overlay after 4 seconds regardless of API call status
+    const loadingTimeout = setTimeout(() => {
+      setStarting(false)
+      console.log('[DEBUG] [Launcher] Loading overlay auto-hidden after 4 seconds')
+    }, 4000)
 
     try {
 
@@ -389,24 +686,37 @@ export default function Launcher() {
         retry_failed: retryFailed ? '1' : '0',
       })
 
+      // Add timeout to prevent hanging (30 seconds should be enough for backend processing)
       const response = await axios.post('/api/run', formData, {
 
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 
         withCredentials: true,
 
+        timeout: 30000,  // 30 second timeout
+
       })
       console.log('[DEBUG] [Launcher] POST /api/run response:', response.data)
 
+      // Clear the auto-hide timeout since we got a response
+      clearTimeout(loadingTimeout)
 
+      // Play start sound
+      playStartSound()
 
       setRunning(true)
-      // Reload balance, price, capacity, and margin balance IMMEDIATELY after starting
-      console.log('[DEBUG] [Launcher] Reloading balance and margin balance after start')
+      
+      // Refresh balance, price, capacity, and margin balance from backend
+      // This will update the displayed values and hide skeleton loading
+      console.log('[DEBUG] [Launcher] Refreshing balance and margin balance after start')
       await Promise.all([
         loadBalance(),
         loadMarginBalance()
       ])
+      
+      // Clear starting state after successful API call and data refresh
+      setStarting(false)
+      
       setTimeout(() => {
         loadLatestLogs({ silent: true })
       }, 500)
@@ -415,8 +725,32 @@ export default function Launcher() {
       console.error('[DEBUG] [Launcher] Error in handleSubmit:', error)
       console.error('[DEBUG] [Launcher] Error response:', error.response?.data)
       console.error('[DEBUG] [Launcher] Error status:', error.response?.status)
+      console.error('[DEBUG] [Launcher] Error code:', error.code)
+      console.error('[DEBUG] [Launcher] Error message:', error.message)
 
-      const msg = error.response?.data?.error || 'Failed to start workers'
+      // Clear the auto-hide timeout since we got an error
+      clearTimeout(loadingTimeout)
+
+      // Clear starting state on error (before showing error popup)
+      setStarting(false)
+
+      // Reload balance and margin balance to restore correct values on error
+      await Promise.all([
+        loadBalance(),
+        loadMarginBalance()
+      ])
+
+      let msg = 'Failed to start account creation'
+      
+      if (error.code === 'ECONNABORTED') {
+        msg = 'Request timed out after 30 seconds. The backend may be slow or unresponsive. Please check the backend logs and try again.'
+      } else if (error.response?.data?.error) {
+        msg = error.response.data.error
+      } else if (error.message) {
+        msg = `Error: ${error.message}`
+      } else if (!error.response) {
+        msg = 'Network error: Could not connect to backend. Please ensure the backend server is running.'
+      }
 
       const needed = error.response?.data?.amount_needed
 
@@ -489,6 +823,18 @@ export default function Launcher() {
         />
       )}
 
+      {starting && (
+        <div className="loading-overlay">
+          <div className="loading-content">
+            <div className="loading-spinner-large"></div>
+            <p className="loading-text">Starting account creation...</p>
+            <div className="loading-progress-bar">
+              <div className="loading-progress-fill"></div>
+            </div>
+          </div>
+        </div>
+      )}
+
 
 
       <div className="info-pills">
@@ -511,13 +857,13 @@ export default function Launcher() {
 
             <span className="info-pill">
 
-              Balance: ₹{balance !== null ? balance.toFixed(2) : 'N/A'}
+              Balance: ₹{balance !== null && balance !== undefined ? balance.toFixed(2) : 'N/A'}
 
             </span>
 
             <span className="info-pill">
 
-              Price: ₹{price !== null ? price.toFixed(2) : 'N/A'}
+              Price: ₹{price !== null && price !== undefined ? price.toFixed(2) : 'N/A'}
 
             </span>
 
@@ -557,7 +903,7 @@ export default function Launcher() {
 
             required
 
-            disabled={running || !imapReady}
+            disabled={running || starting || !imapReady}
 
           />
 
@@ -570,11 +916,19 @@ export default function Launcher() {
               type="checkbox"
               className="toggle-input"
               checked={useUsedAccount}
-              onChange={(e) => setUseUsedAccount(e.target.checked)}
-              disabled={running || !imapReady}
+              onChange={(e) => {
+                const newValue = e.target.checked
+                // Show warning when disabling "No New Accounts" mode
+                if (!newValue && useUsedAccount) {
+                  setShowNewAccountsWarning(true)
+                } else {
+                  setUseUsedAccount(newValue)
+                }
+              }}
+              disabled={running || starting || !imapReady}
             />
             <span className="toggle-slider"></span>
-            <span className="toggle-text">Recovery Mode</span>
+            <span className="toggle-text">No New Accounts</span>
           </label>
         </div>
 
@@ -586,7 +940,7 @@ export default function Launcher() {
               className="toggle-input"
               checked={retryFailed}
               onChange={(e) => setRetryFailed(e.target.checked)}
-              disabled={running || !imapReady}
+              disabled={running || starting || !imapReady}
             />
             <span className="toggle-slider"></span>
             <span className="toggle-text">Retry Failed</span>
@@ -611,7 +965,7 @@ export default function Launcher() {
 
             required
 
-            disabled={running || !imapReady}
+            disabled={running || starting || !imapReady}
 
           />
 
@@ -619,11 +973,21 @@ export default function Launcher() {
 
         <button 
           type="submit" 
-          disabled={running || loading || capacity === null || marginBalance === null} 
-          className={running ? 'running' : ''}
+          disabled={running || starting || loading || capacity === null || marginBalance === null} 
+          className={running || starting ? 'running' : ''}
         >
 
-          {running ? (
+          {starting ? (
+
+            <>
+
+              <span className="spinner"></span>
+
+              Starting...
+
+            </>
+
+          ) : running ? (
 
             <>
 
@@ -679,6 +1043,42 @@ export default function Launcher() {
 
 
 
+      {showNewAccountsWarning && (
+        <div className="popup-overlay" onClick={() => setShowNewAccountsWarning(false)}>
+          <div className="popup" onClick={(e) => e.stopPropagation()}>
+            <h3>⚠️ Warning: Disabling No New Accounts Mode</h3>
+            <p>
+              Disabling "No New Accounts" mode will attempt to create accounts even if the phone number is already registered (recovery mode).
+              This may result in additional balance deductions if the account creation process continues with recovery flow.
+            </p>
+            <div
+              style={{
+                marginTop: '16px',
+                display: 'flex',
+                gap: '10px',
+                justifyContent: 'center',
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  setUseUsedAccount(false)
+                  setShowNewAccountsWarning(false)
+                }}
+                style={{ background: '#c62828', color: 'white' }}
+              >
+                Disable Anyway
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowNewAccountsWarning(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {showBalancePopup && (
 
         <div className="popup-overlay">
@@ -691,7 +1091,7 @@ export default function Launcher() {
 
               To create {totalAccounts} account(s), please add at least ₹
 
-              {amountNeeded != null ? amountNeeded.toFixed(2) : '0.00'} to your SMS balance.
+              {amountNeeded != null && amountNeeded !== undefined ? amountNeeded.toFixed(2) : '0.00'} to your SMS balance.
 
             </p>
 
@@ -727,7 +1127,7 @@ export default function Launcher() {
 
             <p>
 
-              Please enter your IMAP email, password, and Temporasms API key in the IMAP
+              Please enter your IMAP email, password, and API key in the IMAP
 
               settings page before starting account creation.
 

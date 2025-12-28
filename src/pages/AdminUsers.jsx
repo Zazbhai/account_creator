@@ -10,7 +10,6 @@ export default function AdminUsers() {
   const [formData, setFormData] = useState({
     username: '',
     password: '',
-    role: 'user',
     expiry_days: ''
   })
   const [popup, setPopup] = useState({ type: null, message: '' })
@@ -40,7 +39,7 @@ export default function AdminUsers() {
     try {
       await axios.post('/api/admin/users', formData, { withCredentials: true })
       setPopup({ type: 'success', message: 'User created successfully' })
-      setFormData({ username: '', password: '', role: 'user', expiry_days: '' })
+      setFormData({ username: '', password: '', expiry_days: '' })
       loadUsers()
     } catch (error) {
       setPopup({
@@ -259,16 +258,6 @@ export default function AdminUsers() {
             onChange={(e) => setFormData({ ...formData, password: e.target.value })}
             required
           />
-        </div>
-        <div className="form-group">
-          <label>Role:</label>
-          <select
-            value={formData.role}
-            onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-          >
-            <option value="user">User</option>
-            <option value="admin">Admin</option>
-          </select>
         </div>
         <div className="form-group">
           <label>Expiry Days:</label>

@@ -9,7 +9,14 @@ export function useSocket(userId) {
   useEffect(() => {
     if (!userId) return
 
-    const newSocket = io(window.location.origin.replace(':3000', ':5000'), {
+    // Use environment variable for backend URL (supports tunneling URLs)
+    // If VITE_BACKEND_URL is set, use it directly (for tunneling)
+    // Otherwise, try to construct from current origin
+    const socketUrl = import.meta.env.VITE_BACKEND_URL || (window.location.origin.includes(':7333') 
+      ? window.location.origin.replace(':7333', ':6333')
+      : window.location.origin)
+
+    const newSocket = io(socketUrl, {
       transports: ['websocket', 'polling'],
       withCredentials: true,
       autoConnect: true

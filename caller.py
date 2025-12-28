@@ -17,17 +17,79 @@ def _http_get(params: Dict[str, Any]) -> str:
     Perform a GET request with shared base URL and API key.
     Returns raw text from the API or raises ValueError on network/HTTP issues.
     """
+    import datetime
+    import json as json_module
+    import time
+    
+    # #region agent log
+    try:
+        with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+            log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"caller.py:15","message":"_http_get entry","data":{"BASE_URL":BASE_URL,"SERVICE":SERVICE,"OPERATOR":OPERATOR,"COUNTRY":COUNTRY,"API_KEY_set":bool(API_KEY),"API_KEY_length":len(API_KEY)},"timestamp":int(time.time()*1000)}) + "\n")
+    except: pass
+    # #endregion
+    
     merged = {"api_key": API_KEY, **params}
     url = f"{BASE_URL}?{parse.urlencode(merged)}"
+    
+    # Create a safe version of params for logging (redact API key but show first 4 chars for verification)
+    api_key_display = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***REDACTED***"
+    safe_params = {k: (api_key_display if k == 'api_key' else v) for k, v in merged.items()}
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    
+    # Log the API call (using plain text to avoid Windows encoding issues)
+    print("=" * 80)
+    print(f"[CALLER API REQUEST] {timestamp}")
+    print("-" * 80)
+    print(f"URL: {BASE_URL}")
+    print(f"Action: {params.get('action', 'unknown')}")
+    print(f"[CONFIG] Service: {SERVICE} | Operator: {OPERATOR} | Country: {COUNTRY}")
+    print(f"[CONFIG] API Key: {api_key_display} (length: {len(API_KEY)})")
+    print(f"Params (for request): service={params.get('service', SERVICE)}, operator={params.get('operator', OPERATOR)}, country={params.get('country', COUNTRY)}")
+    print(f"Full URL (redacted): {BASE_URL}?{parse.urlencode(safe_params)}")
+    start_time = time.time()
 
     try:
         with request.urlopen(url, timeout=15) as resp:
+            duration = (time.time() - start_time) * 1000  # Convert to milliseconds
+            response_text = resp.read().decode("utf-8").strip()
+            
+            # Log successful response
+            print(f"[OK] Status: {resp.status} {resp.reason}")
+            print(f"Duration: {duration:.2f}ms")
+            print(f"Response: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
+            print(f"Response Length: {len(response_text)} bytes")
+            print("=" * 80)
+            print()
+            
             # API returns plain text like: ACCESS_BALANCE:123.45
-            return resp.read().decode("utf-8").strip()
+            return response_text
     except error.HTTPError as exc:
+        duration = (time.time() - start_time) * 1000
+        print(f"[ERROR] HTTP Error: {exc.code} {exc.reason}")
+        print(f"Duration: {duration:.2f}ms")
+        if hasattr(exc, 'read'):
+            try:
+                error_body = exc.read().decode("utf-8")[:200]
+                print(f"Error Response: {error_body}")
+            except:
+                pass
+        print("=" * 80)
+        print()
         raise ValueError(f"API HTTP {exc.code}: {exc.reason}") from exc
     except error.URLError as exc:
+        duration = (time.time() - start_time) * 1000
+        print(f"[ERROR] Network Error: {exc.reason}")
+        print(f"Duration: {duration:.2f}ms")
+        print("=" * 80)
+        print()
         raise ValueError(f"Network error: {exc.reason}") from exc
+    except Exception as exc:
+        duration = (time.time() - start_time) * 1000
+        print(f"[ERROR] Unexpected Error: {type(exc).__name__}: {exc}")
+        print(f"Duration: {duration:.2f}ms")
+        print("=" * 80)
+        print()
+        raise
 
 
 def get_balance() -> str:
@@ -92,6 +154,7 @@ def get_number(
     """
     Request a virtual number for a service.
     Returns (request_id, phone_number) or None on parse failure.
+    Raises ValueError with "NO_NUMBERS" message if API returns NO_NUMBERS.
     """
     raw = _http_get(
         {
@@ -101,6 +164,9 @@ def get_number(
             "operator": operator,
         }
     )
+    # Check for NO_NUMBERS response before parsing
+    if "NO_NUMBERS" in raw.upper() or "NO NUMBERS" in raw.upper():
+        raise ValueError("NO_NUMBERS: No numbers available right now")
     return parse_number(raw)
 
 
@@ -130,13 +196,18 @@ def get_otp(
 ) -> Optional[str]:
     """
     Poll for OTP/status for up to timeout_seconds.
-    Returns the OTP string if found; otherwise None.
+    Returns the OTP string if found; None if timeout or canceled.
+    Raises Exception if number is canceled (status="cancelled" without OTP).
     """
     deadline = time.time() + timeout_seconds
 
     while True:
         response = _http_get({"action": "getStatus", "id": request_id})
         status, otp = parse_otp_response(response)
+
+        # If number is canceled, raise exception to signal worker to exit
+        if status == "cancelled" and not otp:
+            raise Exception("[X] Number was canceled by backend")
 
         if status in ("ok", "cancelled") and otp:
             return otp
@@ -210,6 +281,7 @@ def request_new_otp_until_new(
     """
     Ask for a fresh OTP (status=3) and poll until a new OTP different from
     previous_otp is received, or timeout is reached. Returns the new OTP or None.
+    Raises Exception if number is canceled.
     """
     deadline = time.time() + timeout_seconds
     last_otp = previous_otp
@@ -218,7 +290,14 @@ def request_new_otp_until_new(
         set_status(3, request_id)
         time.sleep(poll_interval)
 
-        otp = get_otp(request_id, timeout_seconds=poll_interval, poll_interval=poll_interval)
+        try:
+            otp = get_otp(request_id, timeout_seconds=poll_interval, poll_interval=poll_interval)
+        except Exception as e:
+            # If get_otp raises exception (e.g., number canceled), re-raise it
+            if "canceled" in str(e).lower():
+                raise
+            # Otherwise, continue polling
+            otp = None
 
         if otp and otp != last_otp:
             return otp

@@ -5,11 +5,11 @@ def payment_checker(utr):
 
     # ---- CONFIG (YOUR VALUES ARE CORRECT) ----
     MERCHANT_ID = 60987133
-    ACCESS_TOKEN = "a2581a8d9e8c4bfa8580204e872c1119"
+    ACCESS_TOKEN = "036d8f8e389b46c5845cd8200bb6c18c"
 
     # If you get 401/403, try adding session cookies (copy from browser after login to dashboard)
     # Otherwise, leave empty or remove the Cookie line
-    SESSION_COOKIE = "eyJpdiI6IlNSYTFQZENDMEhqV0pnOUxGRjMwb3c9PSIsInZhbHVlIjoiRTJPSWNoaGhJeGxuXC8xK3ZJZEhPZlJ1MTNpZU8xUjc0TEtOV1lkR3NTVWFMMzVzSEhycVo3Vm04eFp2c05IeDZnTHZvclEwNTEzbmQzd29uOVIzcjFQQzNJOFBOUlYxUjQwMTRIYllFZHZud05NRXoxaitIUldERGZNWjRpbGJwIiwibWFjIjoiOGRhYzNjNjhmYjg0NTQyMTJiZDNkNzkyZTY1ZWY4MzdkZDUwODlkMTEyNDljODNlYzQ3ZjYyY2I1ZDBjNWFjMiJ9"  # e.g., "JSESSIONID=xxx; bp_session=yyy"
+    SESSION_COOKIE = "eyJpdiI6Imc2Qmp1UTk5NmtCMCtpN3JMV3NwMWc9PSIsInZhbHVlIjoiS2VMMER4emk4R3BKRFNiSTFpK05yM3gwTUs2RHI0dlhzS0hRV3pZcGxMNTc0YW5udTN3SmNmXC9SNmd4VUFPVmlXd1dmVFpOUXdWMmdJWnVmeVVia0Y5MmxaYTR1T0QxQXhZbTFUaVJwK2N4ak81a09LTU1XcHFCMFwvWmNvYnVKZSIsIm1hYyI6IjY4N2U2MzY3OWJjMTFiYWI4MmE0MmMxMDg2ZWEyZDcwNjYwMWZlOWZmMDM5Nzg5ZjY1NTBhZjQ2ZjZiMDJiNmMifQ=="  # e.g., "JSESSIONID=xxx; bp_session=yyy"
 
     UTR_TO_CHECK = str(utr)  # Replace with the actual UTR you want to verify
 

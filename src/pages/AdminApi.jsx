@@ -11,6 +11,8 @@ export default function AdminApi() {
     operator: '',
     country: '',
     default_price: 6.99,
+    wait_for_otp: 5,
+    wait_for_second_otp: 5,
   })
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -126,6 +128,32 @@ export default function AdminApi() {
             required
             disabled={saving}
           />
+        </div>
+        <div className="form-group">
+          <label>Wait for First OTP (minutes):</label>
+          <input
+            type="number"
+            step="0.1"
+            min="0.1"
+            value={settings.wait_for_otp}
+            onChange={(e) => setSettings({ ...settings, wait_for_otp: e.target.value })}
+            required
+            disabled={saving}
+          />
+          <small>Time to wait for first OTP (signup OTP) before timing out (in minutes)</small>
+        </div>
+        <div className="form-group">
+          <label>Wait for Second OTP (minutes):</label>
+          <input
+            type="number"
+            step="0.1"
+            min="0.1"
+            value={settings.wait_for_second_otp}
+            onChange={(e) => setSettings({ ...settings, wait_for_second_otp: e.target.value })}
+            required
+            disabled={saving}
+          />
+          <small>Time to wait for second OTP (phone OTP) after requesting new OTP (in minutes)</small>
         </div>
         <button type="submit" disabled={saving}>
           {saving ? 'Saving...' : 'Save API Settings'}

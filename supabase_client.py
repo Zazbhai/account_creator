@@ -18,6 +18,8 @@ SUPABASE_ANON_KEY = os.environ.get(
     "SUPABASE_ANON_KEY",
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlqdGV3b3B6bnBzdHhmdnhvYmdrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYwNTAxNTAsImV4cCI6MjA4MTYyNjE1MH0.0W4rRT4QlJYNWiju1W6Br-fZotgjHJRwCcEkfN7LSkQ",
 )
+# Service role key for admin operations (bypasses RLS)
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 _BASE_REST_URL = (
     SUPABASE_URL.rstrip("/") + "/rest/v1" if SUPABASE_URL and SUPABASE_ANON_KEY else None
@@ -34,18 +36,44 @@ _COMMON_HEADERS = (
     else {}
 )
 
+# Admin headers using service role key (bypasses RLS)
+_ADMIN_HEADERS = (
+    {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    if _BASE_REST_URL and (SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY)
+    else {}
+)
+
 
 def is_enabled() -> bool:
     """Return True if Supabase integration is configured."""
     return bool(_BASE_REST_URL and SUPABASE_ANON_KEY)
 
 
-def _request(method: str, path: str, **kwargs) -> requests.Response:
+def _request(method: str, path: str, use_admin_key: bool = False, **kwargs) -> requests.Response:
+    """
+    Make a request to Supabase REST API.
+    
+    Args:
+        method: HTTP method (GET, POST, PATCH, etc.)
+        path: API path (e.g., "/users", "/api_settings")
+        use_admin_key: If True, use service role key (bypasses RLS). Default False.
+        **kwargs: Additional arguments passed to requests.request()
+    
+    Returns:
+        requests.Response object
+    """
     if not is_enabled():
         raise RuntimeError("Supabase is not configured")
     url = _BASE_REST_URL + path
     headers = kwargs.pop("headers", {})
-    merged_headers = {**_COMMON_HEADERS, **headers}
+    # Use admin headers (service role key) for admin operations to bypass RLS
+    base_headers = _ADMIN_HEADERS if use_admin_key else _COMMON_HEADERS
+    merged_headers = {**base_headers, **headers}
     resp = requests.request(method, url, headers=merged_headers, timeout=10, **kwargs)
     # Let caller handle non-2xx where necessary
     return resp
@@ -103,6 +131,7 @@ def create_user(
         "/users",
         json=payload,
         headers={"Prefer": "return=representation"},
+        use_admin_key=True,  # Admin operation - create user
     )
     resp.raise_for_status()
     rows = resp.json() or []
@@ -114,7 +143,7 @@ def delete_user(user_id: int) -> None:
     if not is_enabled():
         return
     params = {"id": f"eq.{user_id}"}
-    resp = _request("DELETE", "/users", params=params)
+    resp = _request("DELETE", "/users", params=params, use_admin_key=True)  # Admin operation
     # 204 is expected; ignore errors for now
     if resp.status_code >= 400:
         # Best-effort; don't crash app
@@ -140,25 +169,106 @@ def upsert_api_settings(settings: Dict[str, Any]) -> None:
     """
     Upsert admin API settings into api_settings table.
     Expects columns matching keys of settings (base_url, service, operator, country, default_price).
+    Uses service role key (if available) to bypass RLS for admin operations.
+    Filters out unknown columns to avoid schema errors.
     """
     if not is_enabled():
+        print("[SUPABASE] upsert_api_settings: Supabase not enabled, skipping")
         return
-    existing = get_api_settings()
-    if existing and "id" in existing:
-        # Update existing row by id
-        row_id = existing["id"]
-        params = {"id": f"eq.{row_id}"}
-        resp = _request("PATCH", "/api_settings", params=params, json=settings)
-    else:
-        # Insert new row
-        resp = _request(
-            "POST",
-            "/api_settings",
-            json=settings,
-            headers={"Prefer": "return=representation"},
-        )
-    if resp.status_code >= 400:
-        print(f"[SUPABASE] Failed to upsert api_settings: {resp.status_code} {resp.text}")
+    
+    # Known columns in api_settings table (filter out unknown columns like wait_for_otp if not in DB)
+    # This allows the code to work even if the database schema hasn't been updated yet
+    known_columns = ["base_url", "service", "operator", "country", "default_price", "wait_for_otp", "wait_for_second_otp"]
+    
+    # Filter settings to only include known columns (or all if we want to be permissive)
+    # For now, we'll try to send all, but catch schema errors gracefully
+    filtered_settings = {k: v for k, v in settings.items() if k in known_columns}
+    
+    # If filtered_settings is empty or different, log a warning
+    if len(filtered_settings) < len(settings):
+        skipped = set(settings.keys()) - set(filtered_settings.keys())
+        if skipped:
+            print(f"[WARN] [upsert_api_settings] Skipping unknown columns: {skipped}")
+    
+    print(f"[DEBUG] [upsert_api_settings] Attempting to save settings: {filtered_settings}")
+    print(f"[DEBUG] [upsert_api_settings] Using service role key: {bool(SUPABASE_SERVICE_ROLE_KEY)}")
+    
+    try:
+        existing = get_api_settings()
+        print(f"[DEBUG] [upsert_api_settings] Existing settings: {existing}")
+        
+        if existing and "id" in existing:
+            # Update existing row by id
+            row_id = existing["id"]
+            params = {"id": f"eq.{row_id}"}
+            print(f"[DEBUG] [upsert_api_settings] Updating existing row with id: {row_id}")
+            # Use admin key for write operations
+            resp = _request("PATCH", "/api_settings", params=params, json=filtered_settings, use_admin_key=True)
+        else:
+            # Insert new row
+            print(f"[DEBUG] [upsert_api_settings] Inserting new row")
+            # Use admin key for write operations
+            resp = _request(
+                "POST",
+                "/api_settings",
+                json=filtered_settings,
+                headers={"Prefer": "return=representation"},
+                use_admin_key=True,
+            )
+        
+        # Check response status
+        if resp.status_code >= 400:
+            error_text = resp.text
+            # Check if it's a schema error (column doesn't exist)
+            if "PGRST204" in error_text or "Could not find" in error_text and "column" in error_text:
+                # Try again without wait_for_otp or wait_for_second_otp if those are the issue
+                columns_to_remove = []
+                if "wait_for_otp" in filtered_settings and "wait_for_otp" in error_text:
+                    columns_to_remove.append("wait_for_otp")
+                if "wait_for_second_otp" in filtered_settings and "wait_for_second_otp" in error_text:
+                    columns_to_remove.append("wait_for_second_otp")
+                
+                if columns_to_remove:
+                    print(f"[WARN] [upsert_api_settings] Column(s) not found in database: {columns_to_remove}, retrying without them")
+                    filtered_settings_retry = {k: v for k, v in filtered_settings.items() if k not in columns_to_remove}
+                    if existing and "id" in existing:
+                        resp = _request("PATCH", "/api_settings", params=params, json=filtered_settings_retry, use_admin_key=True)
+                    else:
+                        resp = _request("POST", "/api_settings", json=filtered_settings_retry, headers={"Prefer": "return=representation"}, use_admin_key=True)
+                    
+                    if resp.status_code >= 400:
+                        error_msg = f"[SUPABASE] Failed to upsert api_settings: {resp.status_code} {resp.text}"
+                        print(error_msg)
+                        if resp.status_code == 401:
+                            print("[SUPABASE] RLS Policy Error: If you see this, you need to either:")
+                            print("  1. Set SUPABASE_SERVICE_ROLE_KEY environment variable (recommended)")
+                            print("  2. Or update RLS policy in Supabase to allow anon key to insert/update api_settings")
+                        raise Exception(error_msg)
+                else:
+                    error_msg = f"[SUPABASE] Failed to upsert api_settings: {resp.status_code} {resp.text}"
+                    print(error_msg)
+                    if resp.status_code == 401:
+                        print("[SUPABASE] RLS Policy Error: If you see this, you need to either:")
+                        print("  1. Set SUPABASE_SERVICE_ROLE_KEY environment variable (recommended)")
+                        print("  2. Or update RLS policy in Supabase to allow anon key to insert/update api_settings")
+                    raise Exception(error_msg)
+            else:
+                error_msg = f"[SUPABASE] Failed to upsert api_settings: {resp.status_code} {resp.text}"
+                print(error_msg)
+                if resp.status_code == 401:
+                    print("[SUPABASE] RLS Policy Error: If you see this, you need to either:")
+                    print("  1. Set SUPABASE_SERVICE_ROLE_KEY environment variable (recommended)")
+                    print("  2. Or update RLS policy in Supabase to allow anon key to insert/update api_settings")
+                raise Exception(error_msg)
+        
+        print(f"[DEBUG] [upsert_api_settings] Successfully saved to Supabase (status: {resp.status_code})")
+        if resp.status_code in (200, 201, 204):
+            result = resp.json() if resp.content else None
+            print(f"[DEBUG] [upsert_api_settings] Response: {result}")
+    except Exception as e:
+        error_msg = f"[SUPABASE] Error in upsert_api_settings: {e}"
+        print(error_msg)
+        raise Exception(error_msg) from e
 
 
 # ===== IMAP config per user =====
@@ -196,13 +306,14 @@ def upsert_imap_config(user_id: int, config: Dict[str, Any]) -> None:
     }
     if existing and "id" in existing:
         params = {"id": f"eq.{existing['id']}"}
-        resp = _request("PATCH", "/imap_config", params=params, json=payload)
+        resp = _request("PATCH", "/imap_config", params=params, json=payload, use_admin_key=True)  # Admin operation
     else:
         resp = _request(
             "POST",
             "/imap_config",
             json=payload,
             headers={"Prefer": "return=representation"},
+            use_admin_key=True,  # Admin operation
         )
     if resp.status_code >= 400:
         print(f"[SUPABASE] Failed to upsert imap_config: {resp.status_code} {resp.text}")
@@ -230,7 +341,7 @@ def update_user_balance(
         "last_price": price,
     }
     params = {"id": f"eq.{user_id}"}
-    resp = _request("PATCH", "/users", params=params, json=payload)
+    resp = _request("PATCH", "/users", params=params, json=payload, use_admin_key=True)  # Admin operation
     if resp.status_code >= 400:
         print(f"[SUPABASE] Failed to update user balance: {resp.status_code} {resp.text}")
 
@@ -243,7 +354,7 @@ def update_user_expiry(user_id: int, expiry_date: str) -> None:
         return
     payload = {"expiry_date": expiry_date}
     params = {"id": f"eq.{user_id}"}
-    resp = _request("PATCH", "/users", params=params, json=payload)
+    resp = _request("PATCH", "/users", params=params, json=payload, use_admin_key=True)  # Admin operation
     if resp.status_code >= 400:
         print(f"[SUPABASE] Failed to update user expiry: {resp.status_code} {resp.text}")
 
@@ -257,7 +368,7 @@ def update_user_wallet(user_id: int, wallet_balance: float) -> None:
         return
     payload = {"wallet_balance": wallet_balance}
     params = {"id": f"eq.{user_id}"}
-    resp = _request("PATCH", "/users", params=params, json=payload)
+    resp = _request("PATCH", "/users", params=params, json=payload, use_admin_key=True)  # Admin operation
     if resp.status_code >= 400:
         print(f"[SUPABASE] Failed to update user wallet: {resp.status_code} {resp.text}")
 
@@ -300,13 +411,14 @@ def upsert_margin_fee_for_user(
         payload["margin_balance"] = margin_balance
     if existing and "id" in existing:
         params = {"id": f"eq.{existing['id']}"}
-        resp = _request("PATCH", "/margin_fees", params=params, json=payload)
+        resp = _request("PATCH", "/margin_fees", params=params, json=payload, use_admin_key=True)  # Admin operation
     else:
         resp = _request(
             "POST",
             "/margin_fees",
             json=payload,
             headers={"Prefer": "return=representation"},
+            use_admin_key=True,  # Admin operation
         )
     if resp.status_code >= 400:
         print(f"[SUPABASE] Failed to upsert margin_fees for user {user_id}: {resp.status_code} {resp.text}")
@@ -337,13 +449,14 @@ def upsert_margin_fee(per_account_fee: float, margin_balance: Optional[float] = 
         payload["margin_balance"] = margin_balance
     if existing and "id" in existing:
         params = {"id": f"eq.{existing['id']}"}
-        resp = _request("PATCH", "/margin_fees", params=params, json=payload)
+        resp = _request("PATCH", "/margin_fees", params=params, json=payload, use_admin_key=True)  # Admin operation
     else:
         resp = _request(
             "POST",
             "/margin_fees",
             json=payload,
             headers={"Prefer": "return=representation"},
+            use_admin_key=True,  # Admin operation
         )
     if resp.status_code >= 400:
         print(f"[SUPABASE] Failed to upsert margin_fees: {resp.status_code} {resp.text}")

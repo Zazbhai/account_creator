@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import './StatusPopup.css'
 
 export default function StatusPopup({
@@ -19,7 +20,8 @@ export default function StatusPopup({
 
   const isSuccess = type === 'success'
 
-  return (
+  // Use portal to render at document root to avoid z-index issues
+  const popupContent = (
     <div className="status-popup-overlay">
       <div className={`status-popup ${isSuccess ? 'status-popup--success' : 'status-popup--error'}`}>
         <button
@@ -111,7 +113,7 @@ export default function StatusPopup({
           )}
         </div>
 
-        <div className="status-message">{message}</div>
+        <div className="status-message" style={{ whiteSpace: 'pre-line' }}>{message}</div>
         <button
           type="button"
           className="status-close-btn"
@@ -122,4 +124,11 @@ export default function StatusPopup({
       </div>
     </div>
   )
+
+  // Render using portal to document body to ensure it's above everything
+  // Fallback to regular render if portal is not available (SSR)
+  if (typeof document !== 'undefined' && document.body) {
+    return createPortal(popupContent, document.body)
+  }
+  return popupContent
 }

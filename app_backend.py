@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, session, send_from_directory, send_file
+from datetime import timedelta
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit, join_room, leave_room
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -15,10 +16,43 @@ import caller
 import supabase_client
 import payment
 
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, use system environment variables
+
 app = Flask(__name__, static_folder='dist', static_url_path='')
 app.secret_key = os.environ.get("SECRET_KEY", "your-secret-key-change-this-in-production")
-CORS(app, supports_credentials=True, origins=['http://localhost:3000', 'http://127.0.0.1:3000'])
-socketio = SocketIO(app, cors_allowed_origins=['http://localhost:3000', 'http://127.0.0.1:3000'], async_mode='threading')
+# Make sessions persistent (30 days)
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
+
+# CORS configuration from environment variables
+# For tunneling (ngrok, etc.), set FRONTEND_URL to your tunneled frontend URL
+# Example: FRONTEND_URL=https://abc123.ngrok-free.app
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:7333")
+CORS_ORIGINS_STR = os.environ.get("CORS_ORIGINS", "")
+if CORS_ORIGINS_STR:
+    # If CORS_ORIGINS is explicitly set, use it
+    CORS_ORIGINS = [origin.strip() for origin in CORS_ORIGINS_STR.split(",")]
+else:
+    # Otherwise, use FRONTEND_URL and add localhost fallbacks
+    CORS_ORIGINS = [FRONTEND_URL]
+    if "localhost" in FRONTEND_URL or "127.0.0.1" in FRONTEND_URL:
+        # Only add localhost variants if FRONTEND_URL is localhost
+        CORS_ORIGINS.extend(["http://localhost:7333", "http://127.0.0.1:7333"])
+
+CORS(app, supports_credentials=True, origins=CORS_ORIGINS)
+# Optimize for 4 vCPU, 16GB RAM: Use threading mode with max_http_buffer_size limit
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins=CORS_ORIGINS, 
+    async_mode='threading',
+    max_http_buffer_size=1e6,  # 1MB limit to prevent memory issues
+    ping_timeout=60,
+    ping_interval=25
+)
 
 # Simple file-based storage
 USERS_FILE = Path("users.json")
@@ -126,6 +160,8 @@ DEFAULT_API_SETTINGS = {
     "operator": caller.OPERATOR,
     "country": caller.COUNTRY,
     "default_price": 6.99,
+    "wait_for_otp": 5,  # Default: 5 minutes (for first OTP)
+    "wait_for_second_otp": 5,  # Default: 5 minutes (for second/phone OTP)
 }
 
 # Default extra safety buffer per account (margin fees) in rupees.
@@ -135,41 +171,87 @@ DEFAULT_MARGIN_PER_ACCOUNT = 2.5
 def load_api_settings() -> dict:
     """
     Load API settings for Temporasms (URL, service, operator, country, default price).
-    Prefer Supabase api_settings table; fall back to local JSON file.
+    Priority: Supabase database > JSON file > defaults.
+    Always sync database values to JSON file for backup.
     """
+    import time
+    # #region agent log
+    try:
+        with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+            log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:158","message":"load_api_settings entry","data":{"file_exists":API_SETTINGS_FILE.exists(),"supabase_enabled":supabase_client.is_enabled()},"timestamp":int(time.time()*1000)}) + "\n")
+    except: pass
+    # #endregion
+    
+    # Priority 1: Try Supabase database first (source of truth)
     if supabase_client.is_enabled():
         try:
             row = supabase_client.get_api_settings()
+            # #region agent log
+            try:
+                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                    log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:167","message":"Supabase get_api_settings result","data":{"has_row":bool(row),"row_data":row if row else None},"timestamp":int(time.time()*1000)}) + "\n")
+            except: pass
+            # #endregion
             if row:
                 # Merge with defaults to ensure all keys exist
                 merged = {**DEFAULT_API_SETTINGS, **row}
+                # Sync to JSON file for backup
+                try:
+                    with open(API_SETTINGS_FILE, "w", encoding='utf-8') as f:
+                        json.dump(merged, f, indent=2)
+                    # #region agent log
+                    try:
+                        with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                            log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:175","message":"Loaded from Supabase and synced to JSON","data":{"base_url":merged.get("base_url"),"service":merged.get("service"),"operator":merged.get("operator"),"country":merged.get("country")},"timestamp":int(time.time()*1000)}) + "\n")
+                    except: pass
+                    # #endregion
+                    print(f"[DEBUG] [load_api_settings] Loaded from Supabase and synced to JSON: {merged}")
+                except Exception as e:
+                    print(f"[WARN] Failed to sync to api_settings.json: {e}")
                 return merged
         except Exception as e:
-            print(f"[WARN] Supabase get_api_settings failed, falling back to file: {e}")
+            print(f"[WARN] Supabase get_api_settings failed: {e}")
+            # #region agent log
+            try:
+                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                    log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:183","message":"Supabase get_api_settings exception","data":{"error":str(e)},"timestamp":int(time.time()*1000)}) + "\n")
+            except: pass
+            # #endregion
 
+    # Priority 2: Fall back to JSON file if Supabase not available or failed
+    if API_SETTINGS_FILE.exists():
+        try:
+            with open(API_SETTINGS_FILE, "r", encoding='utf-8') as f:
+                data = json.load(f)
+            # Merge with defaults to ensure all keys exist
+            merged = {**DEFAULT_API_SETTINGS, **data}
+            # #region agent log
+            try:
+                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                    log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:193","message":"Loaded from JSON file (Supabase unavailable)","data":{"base_url":merged.get("base_url"),"service":merged.get("service"),"operator":merged.get("operator"),"country":merged.get("country")},"timestamp":int(time.time()*1000)}) + "\n")
+            except: pass
+            # #endregion
+            print(f"[DEBUG] [load_api_settings] Loaded from JSON file: {merged}")
+            return merged
+        except Exception as e:
+            print(f"[WARN] Failed to load api_settings.json: {e}, using defaults")
+            # #region agent log
+            try:
+                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                    log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:200","message":"JSON file load failed","data":{"error":str(e)},"timestamp":int(time.time()*1000)}) + "\n")
+            except: pass
+            # #endregion
+
+    # Priority 3: Fall back to defaults and create JSON file
     if not API_SETTINGS_FILE.exists():
-        with open(API_SETTINGS_FILE, "w") as f:
-            json.dump(DEFAULT_API_SETTINGS, f, indent=2)
-        return DEFAULT_API_SETTINGS.copy()
-
-    try:
-        with open(API_SETTINGS_FILE, "r") as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-
-    # Ensure all keys exist
-    updated = False
-    for key, value in DEFAULT_API_SETTINGS.items():
-        if key not in data:
-            data[key] = value
-            updated = True
-
-    if updated:
-        with open(API_SETTINGS_FILE, "w") as f:
-            json.dump(data, f, indent=2)
-
-    return data
+        try:
+            with open(API_SETTINGS_FILE, "w", encoding='utf-8') as f:
+                json.dump(DEFAULT_API_SETTINGS, f, indent=2)
+            print(f"[DEBUG] [load_api_settings] Created default JSON file")
+        except Exception as e:
+            print(f"[WARN] Failed to create api_settings.json: {e}")
+    
+    return DEFAULT_API_SETTINGS.copy()
 
 
 def get_margin_per_account(user_id: int) -> float:
@@ -230,6 +312,79 @@ def get_user_margin_balance(user_id: int) -> float:
     return get_wallet_balance_for_user(user_id)
 
 
+def update_margin_balance(user_id: int, amount: float, reason: str = "") -> bool:
+    """
+    Update margin_balance for a user by adding/subtracting the given amount.
+    Positive amount adds to balance, negative amount subtracts from balance.
+    Returns True if successful, False otherwise.
+    Includes verification to ensure the update was successful.
+    """
+    try:
+        # Get current margin_balance and per_account_fee
+        current_margin_balance = get_user_margin_balance(user_id)
+        current_fee = get_margin_per_account(user_id)
+        
+        # Validate amount is a number
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            print(f"[ERROR] [update_margin_balance] Invalid amount: {amount}")
+            return False
+        
+        # Calculate new balance
+        new_margin_balance = current_margin_balance + amount
+        
+        # Log the operation
+        operation = "ADDED" if amount >= 0 else "DEDUCTED"
+        print(f"[DEBUG] [update_margin_balance] ========== MARGIN BALANCE UPDATE ==========")
+        print(f"[DEBUG] [update_margin_balance] User ID: {user_id}")
+        print(f"[DEBUG] [update_margin_balance] Current balance: ₹{current_margin_balance:.2f}")
+        print(f"[DEBUG] [update_margin_balance] Amount: ₹{abs(amount):.2f} ({operation})")
+        print(f"[DEBUG] [update_margin_balance] New balance: ₹{new_margin_balance:.2f}")
+        print(f"[DEBUG] [update_margin_balance] Reason: {reason}")
+        
+        # Update in Supabase
+        if supabase_client.is_enabled():
+            try:
+                supabase_client.upsert_margin_fee_for_user(
+                    user_id=user_id,
+                    per_account_fee=current_fee,
+                    margin_balance=new_margin_balance,
+                )
+                
+                # Verify the update was successful
+                try:
+                    verified_balance = get_user_margin_balance(user_id)
+                    if abs(verified_balance - new_margin_balance) > 0.01:  # Allow small floating point differences
+                        print(f"[ERROR] [update_margin_balance] Verification failed! Expected ₹{new_margin_balance:.2f}, got ₹{verified_balance:.2f}")
+                        return False
+                    else:
+                        print(f"[DEBUG] [update_margin_balance] Verification successful: ₹{verified_balance:.2f} ✓")
+                except Exception as e:
+                    print(f"[WARN] [update_margin_balance] Could not verify balance update: {e}")
+                    # Don't fail if verification fails, the update might have succeeded
+                
+                print(f"[DEBUG] [update_margin_balance] Successfully updated margin_balance for user {user_id}: ₹{new_margin_balance:.2f}")
+                print(f"[DEBUG] [update_margin_balance] ============================================")
+                return True
+            except Exception as e:
+                print(f"[ERROR] [update_margin_balance] Failed to update margin_balance in Supabase for user {user_id}: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"[DEBUG] [update_margin_balance] ============================================")
+                return False
+        else:
+            print(f"[WARN] [update_margin_balance] Supabase not enabled, cannot update margin_balance")
+            print(f"[DEBUG] [update_margin_balance] ============================================")
+            return False
+    except Exception as e:
+        print(f"[ERROR] [update_margin_balance] Exception updating margin_balance for user {user_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        print(f"[DEBUG] [update_margin_balance] ============================================")
+        return False
+
+
 def get_total_margin_balance() -> float:
     """
     Compute the total margin-fees balance across all users
@@ -252,11 +407,14 @@ def process_number_cancel_queue_once() -> None:
     """
     if not NUMBER_QUEUE_FILE.exists():
         return
+    
     try:
         with open(NUMBER_QUEUE_FILE, "r", encoding="utf-8") as f:
             lines = [line.strip() for line in f if line.strip()]
     except Exception as e:
         print(f"[NUMBER_QUEUE] Failed to read queue file: {e}")
+        import traceback
+        traceback.print_exc()
         return
 
     if not lines:
@@ -264,31 +422,92 @@ def process_number_cancel_queue_once() -> None:
 
     now = time.time()
     remaining: list[str] = []
+    cancelled_count = 0
 
     for line in lines:
         try:
-            req_id, ts_str = line.split(",", 1)
+            parts = line.split(",")
+            if len(parts) >= 3:
+                # New format: request_id, cancel_after, user_id
+                req_id, ts_str, user_id_str = parts[0], parts[1], parts[2]
+                user_id = int(user_id_str) if user_id_str.strip() else None
+            elif len(parts) == 2:
+                # Old format: request_id, cancel_after (backward compatibility)
+                req_id, ts_str = parts[0], parts[1]
+                user_id = None
+            else:
+                print(f"[NUMBER_QUEUE] Invalid line format: '{line}'")
+                continue
             cancel_after = float(ts_str)
-        except Exception:
+        except Exception as e:
+            print(f"[NUMBER_QUEUE] Failed to parse line '{line}': {e}")
             continue
 
+        time_until_cancel = cancel_after - now
         if now >= cancel_after:
             try:
-                print(f"[NUMBER_QUEUE] Cancelling {req_id} (due at {cancel_after}, now={now})")
-                caller.cancel_number(req_id)
+                # Ensure caller is configured before canceling
+                # This runs in a background thread, so we need to load settings each time
+                api_settings = load_api_settings()
+                
+                # Load per-user API key if user_id is available
+                user_api_key = None
+                if user_id:
+                    try:
+                        if supabase_client.is_enabled():
+                            imap_cfg = supabase_client.get_imap_config(user_id)
+                            user_api_key = (imap_cfg.get("api_key") or "").strip()
+                            if user_api_key:
+                                print(f"[NUMBER_QUEUE] Loaded API key for user {user_id} from Supabase (length: {len(user_api_key)})")
+                    except Exception as e:
+                        print(f"[NUMBER_QUEUE] Failed to load per-user config for user {user_id}: {e}")
+                
+                # Fallback to global IMAP config if no per-user key found
+                if not user_api_key:
+                    imap_cfg = load_imap_config()
+                    user_api_key = (imap_cfg.get("api_key") or "").strip()
+                    if user_api_key:
+                        print(f"[NUMBER_QUEUE] Using API key from global IMAP config (length: {len(user_api_key)})")
+                
+                if user_api_key:
+                    caller.API_KEY = user_api_key
+                else:
+                    print(f"[NUMBER_QUEUE] WARNING: No API key found, using default caller API key")
+                
+                caller.BASE_URL = api_settings.get("base_url", caller.BASE_URL)
+                caller.SERVICE = api_settings.get("service", caller.SERVICE)
+                caller.OPERATOR = api_settings.get("operator", caller.OPERATOR)
+                caller.COUNTRY = api_settings.get("country", caller.COUNTRY)
+                
+                print(f"[NUMBER_QUEUE] Cancelling {req_id} (user_id: {user_id}, scheduled at {cancel_after}, now={now}, delay={now - cancel_after:.1f}s)")
+                result = caller.cancel_number(req_id)
+                print(f"[NUMBER_QUEUE] Cancel result for {req_id}: {result}")
+                cancelled_count += 1
             except Exception as e:
                 print(f"[NUMBER_QUEUE] Failed to cancel {req_id}: {e}")
+                import traceback
+                traceback.print_exc()
                 # Keep it in the queue to retry later
                 remaining.append(line)
         else:
+            # Not yet time to cancel
             remaining.append(line)
+    
+    if cancelled_count > 0:
+        print(f"[NUMBER_QUEUE] Processed queue: cancelled {cancelled_count} number(s), {len(remaining)} remaining")
 
-    try:
-        with open(NUMBER_QUEUE_FILE, "w", encoding="utf-8") as f:
-            for line in remaining:
-                f.write(line + "\n")
-    except Exception as e:
-        print(f"[NUMBER_QUEUE] Failed to rewrite queue file: {e}")
+    # Only rewrite if we actually cancelled something or if there are remaining items
+    if len(remaining) != len(lines):
+        try:
+            with open(NUMBER_QUEUE_FILE, "w", encoding="utf-8") as f:
+                for line in remaining:
+                    f.write(line + "\n")
+            if cancelled_count > 0:
+                print(f"[NUMBER_QUEUE] Updated queue file: {len(remaining)} items remaining")
+        except Exception as e:
+            print(f"[NUMBER_QUEUE] Failed to rewrite queue file: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 _number_queue_worker_started = False
@@ -305,15 +524,20 @@ def ensure_number_queue_worker_started() -> None:
     _number_queue_worker_started = True
 
     def _worker():
+        print("[NUMBER_QUEUE] Worker thread started - will process queue every 15 seconds")
         while True:
             try:
                 process_number_cancel_queue_once()
             except Exception as e:
                 print(f"[NUMBER_QUEUE] Worker error: {e}")
-            time.sleep(10)
+                import traceback
+                traceback.print_exc()
+            # Optimize for 4 vCPU: Increase interval to reduce CPU usage
+            time.sleep(15)  # Increased from 10 to 15 seconds
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
+    print("[NUMBER_QUEUE] Background worker thread started successfully")
 
 def get_user_by_username(username):
     if supabase_client.is_enabled():
@@ -450,11 +674,30 @@ def compute_balance_and_capacity(user_id, include_price=False):
         caller.OPERATOR = api_settings.get("operator", caller.OPERATOR)
         caller.COUNTRY = api_settings.get("country", caller.COUNTRY)
 
-        balance_text = caller.get_balance()
+        print(f"[DEBUG] [compute_balance_and_capacity] Calling get_balance()...")
+        try:
+            balance_text = caller.get_balance()
+            print(f"[DEBUG] [compute_balance_and_capacity] get_balance() returned: {balance_text[:100] if balance_text else 'None'}")
+        except Exception as e:
+            print(f"[ERROR] [compute_balance_and_capacity] Exception in get_balance(): {e}")
+            import traceback
+            traceback.print_exc()
+            return None, None, None if include_price else None, f"Failed to get balance: {str(e)}"
+        
         balance = caller.parse_balance(balance_text)
         if balance is None:
             return None, None, None if include_price else None, "Failed to parse balance"
-        price_text = caller.get_price_for_service()
+        
+        print(f"[DEBUG] [compute_balance_and_capacity] Calling get_price_for_service()...")
+        try:
+            price_text = caller.get_price_for_service()
+            print(f"[DEBUG] [compute_balance_and_capacity] get_price_for_service() returned: {price_text}")
+        except Exception as e:
+            print(f"[ERROR] [compute_balance_and_capacity] Exception in get_price_for_service(): {e}")
+            import traceback
+            traceback.print_exc()
+            # Use default price if API call fails
+            price_text = None
         if not price_text:
             price = float(api_settings.get('default_price', 6.99))
         else:
@@ -502,6 +745,7 @@ def login():
         return jsonify({"success": False, "error": "Please enter both username and password"}), 400
     user = get_user_by_username(username)
     if user and check_password_hash(user.get("password_hash"), password):
+        session.permanent = True  # Make session persistent
         session['user_id'] = user.get("id")
         session['username'] = username
         return jsonify({
@@ -545,13 +789,49 @@ def api_funds():
 @login_required
 def api_margin_fees():
     """Get the current margin per-account fee and margin balance for the current user."""
-    user_id = session.get('user_id')
-    fee = get_margin_per_account(user_id)
-    margin_balance = get_user_margin_balance(user_id)
-    return jsonify({
-        "per_account_fee": round(fee, 4),
-        "margin_balance": round(margin_balance, 2),
-    })
+    try:
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({"error": "User not authenticated"}), 401
+        
+        try:
+            fee = get_margin_per_account(user_id)
+            margin_balance = get_user_margin_balance(user_id)
+        except Exception as e:
+            print(f"[WARN] [api_margin_fees] Error getting margin data: {e}")
+            fee = 2.5
+            margin_balance = 0.0
+        
+        # Ensure values are numbers
+        try:
+            fee = float(fee) if fee is not None else 2.5
+            margin_balance = float(margin_balance) if margin_balance is not None else 0.0
+        except (ValueError, TypeError) as e:
+            print(f"[WARN] [api_margin_fees] Invalid fee/balance values, using defaults: {e}")
+            fee = 2.5
+            margin_balance = 0.0
+        
+        response_data = {
+            "per_account_fee": round(fee, 4),
+            "margin_balance": round(margin_balance, 2),
+        }
+        return jsonify(response_data)
+    except Exception as e:
+        print(f"[ERROR] [api_margin_fees] Unexpected exception: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return default values on error instead of crashing
+        try:
+            return jsonify({
+                "per_account_fee": 2.5,
+                "margin_balance": 0.0,
+                "error": "Failed to load margin fees"
+            }), 200  # Return 200 instead of 500 to avoid breaking frontend
+        except Exception as e2:
+            print(f"[ERROR] [api_margin_fees] Failed to create error response: {e2}")
+            # Last resort: return minimal response
+            from flask import Response
+            return Response('{"per_account_fee":2.5,"margin_balance":0.0}', mimetype='application/json'), 200
 
 @app.route('/api/logs', methods=['GET'])
 @login_required
@@ -599,6 +879,33 @@ def api_used_emails():
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"items": lines, "source": "local"})
+
+
+@app.route('/api/no-numbers-notify', methods=['POST'])
+def api_no_numbers_notify():
+    """
+    Endpoint to emit NO_NUMBERS event to frontend via Socket.IO.
+    Called by workers when they encounter NO_NUMBERS error.
+    """
+    try:
+        data = request.get_json() or {}
+        user_id = data.get('user_id')
+        
+        if not user_id:
+            return jsonify({"error": "user_id required"}), 400
+        
+        # Emit Socket.IO event to show popup
+        socketio.emit('no_numbers', {
+            'message': 'No numbers available right now. Please try again after some time.'
+        }, room=f'user_{user_id}')
+        
+        print(f"[NO_NUMBERS] Emitted no_numbers event to user_{user_id}")
+        return jsonify({"status": "notified"}), 200
+    except Exception as e:
+        print(f"[ERROR] [no_numbers_notify] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/reports/failed-numbers', methods=['GET'])
@@ -653,6 +960,63 @@ def api_failed_numbers():
         return jsonify({"error": str(e)}), 500
 
     return jsonify({"items": lines, "source": "local"})
+
+
+@app.route('/api/reports/failed-emails', methods=['GET'])
+@login_required
+def api_failed_emails():
+    """
+    Return or download failed emails (use_first_mails.txt) for the current user.
+    """
+    failed_emails_file = Path("use_first_mails.txt")
+    
+    # If download=1, respond with a text file
+    if request.args.get('download') == '1':
+        try:
+            if not failed_emails_file.exists():
+                # Create an empty file if it doesn't exist
+                failed_emails_file.touch()
+            return send_file(str(failed_emails_file), mimetype='text/plain', as_attachment=True)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+    
+    # View mode: return file contents
+    if not failed_emails_file.exists():
+        return jsonify({"items": [], "content": ""})
+    
+    try:
+        with open(failed_emails_file, 'r', encoding='utf-8-sig', errors='replace') as f:
+            content = f.read()
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+    return jsonify({"items": lines, "content": content})
+
+
+@app.route('/api/reports/failed-emails', methods=['POST'])
+@login_required
+def api_update_failed_emails():
+    """
+    Update the use_first_mails.txt file with new content.
+    """
+    try:
+        data = request.get_json() or {}
+        content = data.get('content', '')
+        
+        failed_emails_file = Path("use_first_mails.txt")
+        
+        # Write the content to the file
+        with open(failed_emails_file, 'w', encoding='utf-8', newline='\n') as f:
+            f.write(content)
+        
+        print(f"[REPORTS] Updated use_first_mails.txt (length: {len(content)} chars)")
+        return jsonify({"success": True, "message": "Failed emails file updated successfully"})
+    except Exception as e:
+        print(f"[ERROR] [api_update_failed_emails] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/reports/log-files', methods=['GET'])
@@ -752,16 +1116,37 @@ def api_worker_status():
 @app.route('/api/run', methods=['POST'])
 @login_required
 def run():
+    print(f"[DEBUG] [run] Starting /api/run endpoint")
     user_id = session.get('user_id')
+    print(f"[DEBUG] [run] User ID: {user_id}")
+    
     total_accounts = int(request.form.get("total_accounts", 10))
     max_parallel = int(request.form.get("max_parallel", 4))
     use_used_account_raw = (request.form.get("use_used_account", "1") or "").strip().lower()
     use_used_account = use_used_account_raw in ("1", "true", "on", "yes")
+    
+    print(f"[DEBUG] [run] Parameters: total_accounts={total_accounts}, max_parallel={max_parallel}, use_used_account={use_used_account}")
 
     if total_accounts < 1 or max_parallel < 1:
         return jsonify({"error": "Invalid input values"}), 400
+    
+    # Optimize for 4 vCPU, 16GB RAM: Limit max_parallel to prevent resource exhaustion
+    # Allow up to 8 parallel workers (2 per CPU core) to leave resources for system
+    MAX_ALLOWED_PARALLEL = min(max_parallel, 8)
+    if max_parallel > MAX_ALLOWED_PARALLEL:
+        max_parallel = MAX_ALLOWED_PARALLEL
+        print(f"[WARN] [run] max_parallel capped at {MAX_ALLOWED_PARALLEL} for resource optimization")
 
-    balance, capacity, price, error_msg = compute_balance_and_capacity(user_id, include_price=True)
+    print(f"[DEBUG] [run] Computing balance and capacity...")
+    try:
+        balance, capacity, price, error_msg = compute_balance_and_capacity(user_id, include_price=True)
+        print(f"[DEBUG] [run] Balance computation complete: balance={balance}, capacity={capacity}, price={price}, error={error_msg}")
+    except Exception as e:
+        print(f"[ERROR] [run] Exception in compute_balance_and_capacity: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to compute balance: {str(e)}"}), 500
+    
     if error_msg:
         return jsonify({"error": error_msg}), 400
 
@@ -788,11 +1173,28 @@ def run():
 
     # Second, enforce margin-fees buffer: check that user has enough margin_balance
     # in margin_fees table (separate from SMS provider balance).
-    margin_per_account = get_margin_per_account(user_id)
+    print(f"[DEBUG] [run] Getting margin per account...")
+    try:
+        margin_per_account = get_margin_per_account(user_id)
+        print(f"[DEBUG] [run] Margin per account: {margin_per_account}")
+    except Exception as e:
+        print(f"[ERROR] [run] Exception in get_margin_per_account: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to get margin fee: {str(e)}"}), 500
+    
     required_margin = total_accounts * margin_per_account
     
     # Get margin_balance from margin_fees table
-    margin_balance = get_user_margin_balance(user_id)
+    print(f"[DEBUG] [run] Getting user margin balance...")
+    try:
+        margin_balance = get_user_margin_balance(user_id)
+        print(f"[DEBUG] [run] Margin balance: {margin_balance}, Required: {required_margin}")
+    except Exception as e:
+        print(f"[ERROR] [run] Exception in get_user_margin_balance: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to get margin balance: {str(e)}"}), 500
     
     if margin_balance < required_margin:
         # How much extra margin balance is needed
@@ -820,15 +1222,165 @@ def run():
     retry_failed_raw = request.form.get("retry_failed", "1").strip().lower()
     retry_failed = retry_failed_raw in ("1", "true", "on", "yes")
     
+    # Deduct margin_balance upfront for all accounts to be created
+    print(f"[DEBUG] [run] ========== MARGIN BALANCE DEDUCTION ==========")
+    print(f"[DEBUG] [run] User ID: {user_id}")
+    print(f"[DEBUG] [run] Total accounts requested: {total_accounts}")
+    print(f"[DEBUG] [run] Per account fee: ₹{margin_per_account:.2f}")
+    
+    # Get current balance before deduction
+    try:
+        current_balance = get_user_margin_balance(user_id)
+        print(f"[DEBUG] [run] Current margin balance: ₹{current_balance:.2f}")
+    except Exception as e:
+        print(f"[WARN] [run] Could not get current balance: {e}")
+        current_balance = 0.0
+    
+    total_margin_deduction = total_accounts * margin_per_account
+    expected_new_balance = current_balance - total_margin_deduction
+    print(f"[DEBUG] [run] Total deduction: ₹{total_margin_deduction:.2f}")
+    print(f"[DEBUG] [run] Expected new balance: ₹{expected_new_balance:.2f}")
+    
+    print(f"[DEBUG] [run] Calling update_margin_balance...")
+    try:
+        if not update_margin_balance(user_id, -total_margin_deduction, f"Deducting upfront for {total_accounts} account(s)"):
+            print(f"[ERROR] [run] update_margin_balance returned False")
+            return jsonify({"error": "Failed to deduct margin balance. Please try again."}), 500
+        print(f"[DEBUG] [run] Margin balance deduction successful")
+    except Exception as e:
+        print(f"[ERROR] [run] Exception in update_margin_balance: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to deduct margin balance: {str(e)}"}), 500
+    
+    # Get updated margin_balance for confirmation
+    print(f"[DEBUG] [run] Verifying margin balance after deduction...")
+    try:
+        updated_margin = get_user_margin_balance(user_id)
+        print(f"[DEBUG] [run] Margin balance after deduction: ₹{updated_margin:.2f}")
+        if abs(updated_margin - expected_new_balance) > 0.01:  # Allow small floating point differences
+            print(f"[WARN] [run] Balance mismatch! Expected ₹{expected_new_balance:.2f}, got ₹{updated_margin:.2f}")
+        else:
+            print(f"[DEBUG] [run] Balance verification successful")
+    except Exception as e:
+        print(f"[WARN] [run] Failed to get updated margin balance: {e}")
+        # Don't fail the request if we can't confirm, deduction already happened
+    print(f"[DEBUG] [run] ============================================")
+    
+    # Initialize account status tracking for this batch
+    print(f"[DEBUG] [run] Initializing account status tracking...")
+    with account_status_lock:
+        if user_id not in user_account_status:
+            user_account_status[user_id] = {
+                "success": 0, 
+                "failed": 0, 
+                "total_requested": 0,
+                "reported_emails": set()  # Track reported emails to prevent double-counting
+            }
+        # Ensure reported_emails exists (for existing entries)
+        if "reported_emails" not in user_account_status[user_id]:
+            user_account_status[user_id]["reported_emails"] = set()
+        user_account_status[user_id]["total_requested"] = total_accounts
+        print(f"[DEBUG] [run] Initialized account tracking: total_requested={total_accounts}")
+    
+    print(f"[DEBUG] [run] Starting worker thread...")
     thread = threading.Thread(
         target=run_parallel_sessions,
-        args=(total_accounts, max_parallel, user_id, use_used_account, retry_failed),
+        args=(total_accounts, max_parallel, user_id, use_used_account, retry_failed, margin_per_account),
         daemon=True
     )
     thread.start()
+    print(f"[DEBUG] [run] Worker thread started, returning success response")
 
     return jsonify({"success": True})
 
+
+# Track account creation success/failure for margin_balance refunds
+user_account_status = {}  # {user_id: {"success": count, "failed": count, "total_requested": count, "reported_emails": set}}
+account_status_lock = threading.Lock()
+
+@app.route('/api/account-status', methods=['POST'])
+def api_account_status():
+    """
+    Endpoint for account_creator.py to report account creation success or failure.
+    Used to track margin_balance refunds for failed accounts.
+    Prevents double-counting by tracking which emails have already been reported.
+    """
+    try:
+        data = request.get_json() or {}
+        user_id = data.get('user_id')
+        status = data.get('status')  # 'success' or 'failed'
+        email = data.get('email')  # Optional: email to prevent double-counting
+        
+        if not user_id or status not in ('success', 'failed'):
+            return jsonify({"error": "Invalid request. user_id and status (success/failed) required"}), 400
+        
+        user_id = int(user_id)
+        margin_per_account = get_margin_per_account(user_id)
+        
+        with account_status_lock:
+            if user_id not in user_account_status:
+                user_account_status[user_id] = {
+                    "success": 0, 
+                    "failed": 0, 
+                    "total_requested": 0,
+                    "reported_emails": set()  # Track reported emails to prevent double-counting
+                }
+            
+            # Check if this email was already reported (prevent double-counting)
+            email_key = email or f"account_{user_account_status[user_id]['success'] + user_account_status[user_id]['failed']}"
+            if email_key in user_account_status[user_id].get("reported_emails", set()):
+                print(f"[WARN] [api_account_status] User {user_id}: Email {email_key} already reported, skipping duplicate report")
+                return jsonify({"success": True, "message": "Already reported"})
+            
+            if status == 'success':
+                user_account_status[user_id]["success"] += 1
+                user_account_status[user_id]["reported_emails"].add(email_key)
+                print(f"[DEBUG] [api_account_status] User {user_id}: Account SUCCESS (Total success: {user_account_status[user_id]['success']}, Total attempted: {user_account_status[user_id]['success'] + user_account_status[user_id]['failed']})")
+            else:
+                # status == 'failed' - ALWAYS refund margin_balance
+                # This includes NO_NUMBERS errors and all other failure cases
+                user_account_status[user_id]["failed"] += 1
+                user_account_status[user_id]["reported_emails"].add(email_key)
+                
+                print(f"[DEBUG] [api_account_status] Processing refund for failed account (email: {email or 'N/A'}, margin_per_account: ₹{margin_per_account:.2f})")
+                
+                # Get current balance before refund for verification
+                try:
+                    balance_before = get_user_margin_balance(user_id)
+                    print(f"[DEBUG] [api_account_status] Balance before refund: ₹{balance_before:.2f}")
+                except Exception as e:
+                    balance_before = None
+                    print(f"[WARN] [api_account_status] Could not get balance before refund: {e}")
+                
+                # Refund margin_balance for failed account (trigger automatic refund)
+                # This refunds the per_account_fee that was deducted upfront
+                refund_reason = f"Refunding for failed account (email: {email or 'N/A'})"
+                if not email or email == 'N/A':
+                    refund_reason = f"Refunding for failed account (NO_NUMBERS or no email generated)"
+                
+                if update_margin_balance(user_id, margin_per_account, refund_reason):
+                    try:
+                        balance_after = get_user_margin_balance(user_id)
+                        if balance_before is not None:
+                            expected_balance = balance_before + margin_per_account
+                            if abs(balance_after - expected_balance) > 0.01:
+                                print(f"[WARN] [api_account_status] Balance mismatch! Expected ₹{expected_balance:.2f}, got ₹{balance_after:.2f}")
+                            else:
+                                print(f"[DEBUG] [api_account_status] Balance verification: ₹{balance_before:.2f} + ₹{margin_per_account:.2f} = ₹{balance_after:.2f} ✓")
+                    except Exception:
+                        pass  # Verification failed, but refund succeeded
+                    
+                    print(f"[DEBUG] [api_account_status] User {user_id}: Account FAILED - Refunded ₹{margin_per_account:.2f} (Total failed: {user_account_status[user_id]['failed']}, Total attempted: {user_account_status[user_id]['success'] + user_account_status[user_id]['failed']})")
+                else:
+                    print(f"[ERROR] [api_account_status] User {user_id}: Failed to refund margin_balance for failed account")
+        
+        return jsonify({"success": True})
+    except Exception as e:
+        print(f"[ERROR] [api_account_status] Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/funds/add', methods=['POST'])
 @login_required
@@ -946,14 +1498,53 @@ def api_add_funds():
     )
 
 @app.route('/api/stop', methods=['POST'])
-@login_required
 def api_stop():
-    """Stop all workers for current user."""
+    """Stop all workers for current user. Can be called from session or from worker process."""
+    # Try to get user_id from session first (normal user request)
     user_id = session.get('user_id')
+    # If no session, try to get from request data (worker timeout request)
+    if not user_id:
+        try:
+            data = request.get_json() or {}
+            user_id = data.get('user_id')
+            if not user_id:
+                # Try to get from USER_ID environment variable if available
+                user_id = os.environ.get('USER_ID')
+        except:
+            pass
+    
+    if not user_id:
+        return jsonify({"error": "User ID required"}), 400
+    
+    # Convert to int if it's a string
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid user ID"}), 400
     
     # Set stop flag
     with user_stop_flags_lock:
         user_stop_flags[user_id] = True
+    
+    # Note: Workers will report their own status when they exit (success or failed)
+    # We don't need to count or refund here - the final check in run_parallel_sessions will handle
+    # any accounts that didn't report (truly didn't start or were interrupted before reporting)
+    with account_status_lock:
+        status = user_account_status.get(user_id, {"success": 0, "failed": 0, "total_requested": 0})
+        total_requested = status.get("total_requested", 0)
+        success_count = status.get("success", 0)
+        failed_count = status.get("failed", 0)
+        completed_count = success_count + failed_count
+        remaining_count = max(0, total_requested - completed_count)
+        
+        print(f"[DEBUG] [api_stop] Stop button pressed - current status:")
+        print(f"  User ID: {user_id}")
+        print(f"  Total requested: {total_requested}")
+        print(f"  Success (reported): {success_count}")
+        print(f"  Failed (reported): {failed_count}")
+        print(f"  Completed (reported): {completed_count}")
+        print(f"  Remaining (not yet reported): {remaining_count}")
+        print(f"[DEBUG] [api_stop] Workers will report their own status. Final refund will be calculated when all workers complete.")
     
     # Kill all processes
     with user_processes_lock:
@@ -1032,11 +1623,27 @@ def admin_api_settings():
     operator = data.get("operator", "").strip() or settings["operator"]
     country = data.get("country", "").strip() or settings["country"]
     default_price = data.get("default_price", settings["default_price"])
+    wait_for_otp = data.get("wait_for_otp", settings.get("wait_for_otp", 5))
+    wait_for_second_otp = data.get("wait_for_second_otp", settings.get("wait_for_second_otp", 5))
 
     try:
         default_price = float(default_price)
     except (TypeError, ValueError):
         return jsonify({"error": "default_price must be a number"}), 400
+
+    try:
+        wait_for_otp = float(wait_for_otp)
+        if wait_for_otp <= 0:
+            return jsonify({"error": "wait_for_otp must be greater than 0"}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "wait_for_otp must be a number"}), 400
+
+    try:
+        wait_for_second_otp = float(wait_for_second_otp)
+        if wait_for_second_otp <= 0:
+            return jsonify({"error": "wait_for_second_otp must be greater than 0"}), 400
+    except (TypeError, ValueError):
+        return jsonify({"error": "wait_for_second_otp must be a number"}), 400
 
     new_settings = {
         "base_url": base_url,
@@ -1044,22 +1651,31 @@ def admin_api_settings():
         "operator": operator,
         "country": country,
         "default_price": default_price,
+        "wait_for_otp": wait_for_otp,
+        "wait_for_second_otp": wait_for_second_otp,
     }
 
-    # Persist to Supabase if available
+    # Always write to JSON file first (source of truth)
+    try:
+        with open(API_SETTINGS_FILE, "w", encoding='utf-8') as f:
+            json.dump(new_settings, f, indent=2)
+        print(f"[DEBUG] [admin_api_settings] Saved to JSON file: {new_settings}")
+    except Exception as e:
+        return jsonify({"error": f"Failed to save to JSON file: {str(e)}"}), 400
+
+    # Then sync to Supabase if available
     if supabase_client.is_enabled():
         try:
             supabase_client.upsert_api_settings(new_settings)
+            print(f"[DEBUG] [admin_api_settings] Successfully synced to Supabase")
         except Exception as e:
-            print(f"[WARN] Supabase upsert_api_settings failed: {e}")
+            error_msg = f"Failed to save to Supabase database: {str(e)}"
+            print(f"[ERROR] [admin_api_settings] {error_msg}")
+            # Don't fail the whole request if Supabase fails - JSON file is saved
+            # But log it clearly so admin knows
+            return jsonify({"success": True, "settings": new_settings, "warning": error_msg}), 200
 
-    # Also keep local JSON as a simple backup
-    try:
-        with open(API_SETTINGS_FILE, "w") as f:
-            json.dump(new_settings, f, indent=2)
-        return jsonify({"success": True, "settings": new_settings})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+    return jsonify({"success": True, "settings": new_settings})
 
 
 @app.route('/api/admin/margin-fees', methods=['GET', 'POST'])
@@ -1130,7 +1746,8 @@ def admin_users():
     else:
         username = request.json.get('username', '').strip()
         password = request.json.get('password', '').strip()
-        role = request.json.get('role', 'user').strip()
+        # Force role to 'user' - admin role cannot be created through this endpoint
+        role = 'user'
         expiry_days_str = request.json.get('expiry_days', '').strip()
 
         if not username or not password:
@@ -1286,7 +1903,7 @@ def handle_join(data):
         user_id = session.get('user_id')
         join_room(f'user_{user_id}')
 
-def run_account_creator(session_num, total_sessions, user_id, use_used_account):
+def run_account_creator(session_num, total_sessions, user_id, use_used_account, retry_failed=True):
     """Run a single account creator session."""
     session_id = f"{session_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     worker_num = session_num
@@ -1298,9 +1915,60 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account):
         # Build environment for worker process, including per-user API credentials
         # and admin-configured API settings so that all SMS API calls use the
         # correct key/base URL/service/operator/country.
-        imap_cfg = load_imap_config()
+        
+        # #region agent log
+        import json as json_module
+        try:
+            with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"app_backend.py:1330","message":"run_account_creator entry","data":{"user_id":user_id,"session_num":session_num},"timestamp":int(time.time()*1000)}) + "\n")
+        except: pass
+        # #endregion
+        
+        # Load per-user API key from IMAP config (Supabase first, then legacy file)
+        imap_cfg = {}
+        if supabase_client.is_enabled():
+            try:
+                imap_cfg = supabase_client.get_imap_config(user_id)
+                # #region agent log
+                try:
+                    with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                        log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"app_backend.py:1336","message":"Loaded IMAP config from Supabase","data":{"user_id":user_id,"has_api_key":bool(imap_cfg.get("api_key")),"api_key_length":len(imap_cfg.get("api_key",""))},"timestamp":int(time.time()*1000)}) + "\n")
+                except: pass
+                # #endregion
+            except Exception as e:
+                print(f"[WARN] Supabase get_imap_config failed, falling back to file: {e}")
+                # #region agent log
+                try:
+                    with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                        log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"app_backend.py:1340","message":"Supabase get_imap_config failed","data":{"error":str(e)},"timestamp":int(time.time()*1000)}) + "\n")
+                except: pass
+                # #endregion
+        if not imap_cfg:
+            imap_cfg = load_imap_config()
+            # #region agent log
+            try:
+                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                    log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"app_backend.py:1344","message":"Loaded IMAP config from file","data":{"has_api_key":bool(imap_cfg.get("api_key")),"api_key_length":len(imap_cfg.get("api_key",""))},"timestamp":int(time.time()*1000)}) + "\n")
+            except: pass
+            # #endregion
+        
         api_settings = load_api_settings()
         user_api_key = (imap_cfg.get("api_key") or "").strip()
+
+        # #region agent log
+        try:
+            with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:1350","message":"API settings loaded","data":{"base_url":api_settings.get("base_url"),"service":api_settings.get("service"),"operator":api_settings.get("operator"),"country":api_settings.get("country")},"timestamp":int(time.time()*1000)}) + "\n")
+        except: pass
+        # #endregion
+        
+        # Debug: Print what API settings were loaded
+        print(f"[DEBUG] [run_account_creator] Loaded API settings: {api_settings}")
+        print(f"[DEBUG] [run_account_creator] base_url: {api_settings.get('base_url')}")
+        print(f"[DEBUG] [run_account_creator] service: {api_settings.get('service')}")
+        print(f"[DEBUG] [run_account_creator] operator: {api_settings.get('operator')}")
+        print(f"[DEBUG] [run_account_creator] country: {api_settings.get('country')}")
+        print(f"[DEBUG] [run_account_creator] user_api_key: {'SET (' + str(len(user_api_key)) + ' chars)' if user_api_key else 'NOT SET'}")
 
         env = os.environ.copy()
         env['USER_ID'] = str(user_id)
@@ -1308,21 +1976,52 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account):
         env['WORKER_NUM'] = str(worker_num)
         env['PYTHONUNBUFFERED'] = '1'
         env['USE_USED_ACCOUNT'] = '1' if use_used_account else '0'
+        env['RETRY_FAILED'] = '1' if retry_failed else '0'
 
         if user_api_key:
             env['API_KEY'] = user_api_key
-        env['API_BASE_URL'] = api_settings.get("base_url", caller.BASE_URL)
-        env['API_SERVICE'] = api_settings.get("service", caller.SERVICE)
-        env['API_OPERATOR'] = api_settings.get("operator", caller.OPERATOR)
-        env['API_COUNTRY'] = api_settings.get("country", caller.COUNTRY)
         
+        # Always use values from api_settings (JSON file or Supabase)
+        # Don't fall back to caller defaults - use what's in the settings
+        env['API_BASE_URL'] = str(api_settings.get("base_url", caller.BASE_URL))
+        env['API_SERVICE'] = str(api_settings.get("service", caller.SERVICE))
+        env['API_OPERATOR'] = str(api_settings.get("operator", caller.OPERATOR))
+        env['API_COUNTRY'] = str(api_settings.get("country", caller.COUNTRY))
+        env['WAIT_FOR_OTP'] = str(api_settings.get("wait_for_otp", 5))  # In minutes (for first OTP)
+        env['WAIT_FOR_SECOND_OTP'] = str(api_settings.get("wait_for_second_otp", 5))  # In minutes (for second/phone OTP)
+        # Pass backend URL so workers can signal backend to stop all workers on timeout
+        backend_host = os.environ.get("BACKEND_HOST", "0.0.0.0")
+        backend_port = os.environ.get("BACKEND_PORT", "6333")
+        env['BACKEND_URL'] = f"http://{backend_host}:{backend_port}" if backend_host != "0.0.0.0" else f"http://localhost:{backend_port}"
+        
+        # #region agent log
+        try:
+            with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
+                log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"app_backend.py:1370","message":"Environment variables set","data":{"API_KEY_set":bool(env.get("API_KEY")),"API_KEY_length":len(env.get("API_KEY","")),"API_BASE_URL":env.get("API_BASE_URL"),"API_SERVICE":env.get("API_SERVICE"),"API_OPERATOR":env.get("API_OPERATOR"),"API_COUNTRY":env.get("API_COUNTRY")},"timestamp":int(time.time()*1000)}) + "\n")
+        except: pass
+        # #endregion
+        
+        # Debug: Print what environment variables are being set
+        print(f"[DEBUG] [run_account_creator] Setting environment variables:")
+        print(f"  API_BASE_URL: {env.get('API_BASE_URL')}")
+        print(f"  API_SERVICE: {env.get('API_SERVICE')}")
+        print(f"  API_OPERATOR: {env.get('API_OPERATOR')}")
+        print(f"  API_COUNTRY: {env.get('API_COUNTRY')}")
+        print(f"  WAIT_FOR_OTP: {env.get('WAIT_FOR_OTP')} minutes (first OTP)")
+        print(f"  WAIT_FOR_SECOND_OTP: {env.get('WAIT_FOR_SECOND_OTP')} minutes (second OTP)")
+        print(f"  API_KEY: {'SET (' + str(len(env.get('API_KEY', ''))) + ' chars)' if env.get('API_KEY') else 'NOT SET'}")
+        
+        # Optimize for 4 vCPU, 16GB RAM: Limit subprocess resources
+        # Use line buffering and limit memory/CPU usage
         process = subprocess.Popen(
             ["python", "-u", "account_creator.py"],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1,
-            env=env
+            bufsize=1,  # Line buffered
+            env=env,
+            # Limit process group to prevent resource exhaustion
+            preexec_fn=None if os.name == 'nt' else lambda: os.setpgrp()  # Unix only
         )
         
         with user_processes_lock:
@@ -1331,11 +2030,17 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account):
             user_processes[user_id].append(process)
         
         def read_output():
-            """Stream worker stdout into in-memory + file-based logs."""
+            """Stream worker stdout into in-memory + file-based logs.
+            Optimized for 4 vCPU, 16GB RAM: Batch writes to reduce I/O overhead."""
             worker_log = LOG_DIR / f"worker{worker_num}.txt"
+            log_buffer = []
+            buffer_size = 5  # Buffer 5 lines before flushing to disk
+            last_flush = time.time()
+            flush_interval = 0.5  # Flush every 0.5 seconds even if buffer not full
+            
             try:
-                with open(worker_log, 'a', encoding='utf-8') as wf, open(
-                    latest_log, 'a', encoding='utf-8'
+                with open(worker_log, 'a', encoding='utf-8', buffering=8192) as wf, open(
+                    latest_log, 'a', encoding='utf-8', buffering=8192
                 ) as lf:
                     for line in iter(process.stdout.readline, ''):
                         if not line:
@@ -1344,23 +2049,38 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account):
                         if not line:
                             continue
 
-                        # In-memory + websocket log
+                        # In-memory + websocket log (immediate for real-time updates)
                         add_log(user_id, line)
 
-                        # File-based logs with timestamp and worker number
+                        # Buffer file writes for better I/O performance
                         ts = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         tagged = f"[{ts}] [W{worker_num}] {line}\n"
+                        log_buffer.append(tagged)
+                        
+                        # Flush buffer when it reaches size or after interval
+                        current_time = time.time()
+                        if len(log_buffer) >= buffer_size or (current_time - last_flush) >= flush_interval:
+                            try:
+                                for tag in log_buffer:
+                                    wf.write(tag)
+                                    lf.write(tag)
+                                wf.flush()
+                                lf.flush()
+                                log_buffer = []
+                                last_flush = current_time
+                            except Exception as e:
+                                print(f"[WARN] Failed to write log buffer: {e}")
+                    
+                    # Flush remaining logs
+                    if log_buffer:
                         try:
-                            wf.write(tagged)
+                            for tag in log_buffer:
+                                wf.write(tag)
+                                lf.write(tag)
                             wf.flush()
-                        except Exception:
-                            # Don't let file I/O break the worker
-                            pass
-                        try:
-                            lf.write(tagged)
                             lf.flush()
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"[WARN] Failed to flush remaining logs: {e}")
             except Exception as e:
                 error_msg = f"[ERROR] Worker {worker_num} output read error: {e}"
                 add_log(user_id, error_msg)
@@ -1379,7 +2099,7 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account):
             if user_id in user_processes:
                 user_processes[user_id] = [p for p in user_processes[user_id] if p.poll() is None]
 
-def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_account, retry_failed=True):
+def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_account, retry_failed=True, margin_per_account=None):
     """Run sessions in batches."""
     LOG_DIR = Path("logs")
     LOG_DIR.mkdir(exist_ok=True)
@@ -1432,14 +2152,16 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                     current_session = session_num + i
                     if i == 0:
                         future = executor.submit(
-                            run_account_creator, current_session, total_accounts, user_id, use_used_account
+                            run_account_creator, current_session, total_accounts, user_id, use_used_account, retry_failed
                         )
                         futures.append(future)
                         session_map[future] = current_session
                     else:
-                        time.sleep(2)
+                        # Optimize for 4 vCPU: Stagger worker starts to reduce CPU spikes
+                        # Reduce delay slightly but still stagger to prevent resource contention
+                        time.sleep(1.5)  # Reduced from 2s to 1.5s for faster startup
                         future = executor.submit(
-                            run_account_creator, current_session, total_accounts, user_id, use_used_account
+                            run_account_creator, current_session, total_accounts, user_id, use_used_account, retry_failed
                         )
                         futures.append(future)
                         session_map[future] = current_session
@@ -1480,13 +2202,88 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                         if user_stop_flags.get(user_id, False):
                             break
                     try:
-                        run_account_creator(failed_session, total_accounts, user_id, use_used_account)
+                        run_account_creator(failed_session, total_accounts, user_id, use_used_account, retry_failed)
                         add_log(user_id, f"[INFO] Retry session {failed_session} completed successfully")
                     except Exception as e:
                         error_msg = f"[ERROR] Retry session {failed_session} failed again: {e}"
                         add_log(user_id, error_msg)
                 # Clear failed sessions after retry attempt
                 failed_sessions = []
+        
+        # Track account success/failure by parsing logs or using API calls
+        # For now, we'll track via API endpoint calls from account_creator.py
+        # If margin_per_account is provided, we'll refund for any failures at the end
+        if margin_per_account:
+            print(f"[DEBUG] [run_parallel_sessions] Margin tracking enabled: ₹{margin_per_account:.2f} per account")
+        
+        # Get final account status summary and emit to frontend
+        # Wait a moment for any pending status reports from workers
+        # Increased wait time to ensure all workers have time to report
+        time.sleep(3)  # Increased from 2s to 3s to give workers more time to report
+        
+        with account_status_lock:
+            status = user_account_status.get(user_id, {"success": 0, "failed": 0, "total_requested": 0})
+            success_count = status.get("success", 0)
+            failed_count = status.get("failed", 0)
+            total_requested = status.get("total_requested", 0)
+            total_attempted = success_count + failed_count
+            
+            # Calculate remaining accounts that were not reported (workers that didn't report status)
+            remaining_count = max(0, total_requested - total_attempted)
+            
+            print(f"[DEBUG] [run_parallel_sessions] Final account status (before handling remaining):")
+            print(f"  Total requested: {total_requested}")
+            print(f"  Success (reported): {success_count}")
+            print(f"  Failed (reported): {failed_count}")
+            print(f"  Total attempted (reported): {total_attempted}")
+            print(f"  Remaining (not reported): {remaining_count}")
+            print(f"[DEBUG] [run_parallel_sessions] Margin balance calculation:")
+            print(f"  Per account fee: ₹{margin_per_account:.2f}")
+            print(f"  Upfront deduction: ₹{total_requested * margin_per_account:.2f} (for {total_requested} accounts)")
+            print(f"  Refunded so far: ₹{failed_count * margin_per_account:.2f} (for {failed_count} failed accounts)")
+            print(f"  Expected remaining refund: ₹{remaining_count * margin_per_account:.2f} (for {remaining_count} unaccounted accounts)")
+            
+            # If there are remaining accounts that didn't report (stopped before completion)
+            # Refund for them and mark as failed for summary
+            final_failed_count = failed_count
+            if remaining_count > 0 and margin_per_account:
+                total_refund = remaining_count * margin_per_account
+                print(f"[DEBUG] [run_parallel_sessions] Found {remaining_count} accounts that didn't report status (stopped/interrupted)")
+                print(f"[DEBUG] [run_parallel_sessions] Refunding ₹{total_refund:.2f} for these accounts")
+                if update_margin_balance(user_id, total_refund, f"Refunding for {remaining_count} account(s) that didn't complete"):
+                    # Add to failed count for accurate summary (these accounts didn't succeed)
+                    final_failed_count = failed_count + remaining_count
+                    user_account_status[user_id]["failed"] = final_failed_count
+                    print(f"[DEBUG] [run_parallel_sessions] Updated failed count to {final_failed_count} (includes {remaining_count} stopped accounts)")
+                    print(f"[DEBUG] [run_parallel_sessions] Total refunded: ₹{final_failed_count * margin_per_account:.2f} (for {final_failed_count} failed accounts)")
+                else:
+                    print(f"[ERROR] [run_parallel_sessions] Failed to refund for {remaining_count} unaccounted accounts")
+            
+            # Calculate final total (should match total_requested)
+            final_total = success_count + final_failed_count
+            
+            # Validate: total should not exceed total_requested
+            if final_total > total_requested:
+                print(f"[WARN] [run_parallel_sessions] Total ({final_total}) exceeds requested ({total_requested})! Adjusting...")
+                # Cap failed count to ensure total doesn't exceed requested
+                final_failed_count = max(0, total_requested - success_count)
+                user_account_status[user_id]["failed"] = final_failed_count
+                final_total = success_count + final_failed_count
+                print(f"[DEBUG] [run_parallel_sessions] Adjusted: Success={success_count}, Failed={final_failed_count}, Total={final_total}")
+            
+            # Always emit account summary when workers complete
+            print(f"[DEBUG] [run_parallel_sessions] Account Summary - Success: {success_count}, Failed: {final_failed_count}, Total: {final_total}")
+            socketio.emit('account_summary', {
+                'success': success_count,
+                'failed': final_failed_count,
+                'total': final_total,
+                'message': f"Total Success: {success_count} | Total Failed: {final_failed_count}"
+            }, room=f'user_{user_id}')
+            
+            print(f"[DEBUG] [run_parallel_sessions] Emitted account_summary event to user_{user_id}: success={success_count}, failed={final_failed_count}, total={final_total}")
+            
+            # Clear status for this user after emitting (optional, or keep for history)
+            # user_account_status[user_id] = {"success": 0, "failed": 0}
         
         completion_msg = "[INFO] All workers completed!"
         add_log(user_id, completion_msg)
@@ -1513,5 +2310,21 @@ def serve_react(path):
         return send_from_directory(app.static_folder, 'index.html')
 
 if __name__ == "__main__":
-    print("Starting Flask app with SocketIO on http://127.0.0.1:5000")
-    socketio.run(app, debug=True, host="0.0.0.0", port=5000, allow_unsafe_werkzeug=True)
+    BACKEND_HOST = os.environ.get("BACKEND_HOST", "0.0.0.0")
+    BACKEND_PORT = int(os.environ.get("BACKEND_PORT", "6333"))
+    DEBUG_MODE = os.environ.get("FLASK_DEBUG", "True").lower() == "true"
+    
+    print("=" * 60)
+    print("🚀 Starting Flask Backend Server")
+    print("=" * 60)
+    print(f"   Host: {BACKEND_HOST}")
+    print(f"   Port: {BACKEND_PORT}")
+    print(f"   Debug: {DEBUG_MODE}")
+    print(f"   Frontend URL: {FRONTEND_URL}")
+    print(f"   CORS Origins: {', '.join(CORS_ORIGINS)}")
+    print("=" * 60)
+    print(f"   Server URL: http://{BACKEND_HOST}:{BACKEND_PORT}")
+    print("=" * 60)
+    print()
+    
+    socketio.run(app, debug=DEBUG_MODE, host=BACKEND_HOST, port=BACKEND_PORT, allow_unsafe_werkzeug=True)
