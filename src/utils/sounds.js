@@ -48,3 +48,4 @@ export function playCompletionSound() {
     playBeep(500, 300, 'sine')
   }, 150)
 }
+

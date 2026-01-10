@@ -56,9 +56,9 @@ try:
 except ImportError:
     HAS_MSVCRT = False
 
-# Try to import supabase_client if available
+# Try to import neon_client if available
 try:
-    import supabase_client
+    import neon_client as supabase_client
 except ImportError:
     supabase_client = None
 
@@ -1367,7 +1367,7 @@ def generate_flipkart_email() -> str:
                 # Try to load from Supabase first (per-user config)
                 if user_id:
                     try:
-                        import supabase_client
+                        import neon_client as supabase_client
                         if supabase_client.is_enabled():
                             try:
                                 user_id_int = int(user_id)
@@ -1552,7 +1552,7 @@ def generate_flipkart_email() -> str:
     user_id = os.environ.get("USER_ID")
     if user_id:
         try:
-            import supabase_client
+            import neon_client as supabase_client
             if supabase_client.is_enabled():
                 try:
                     user_id_int = int(user_id)

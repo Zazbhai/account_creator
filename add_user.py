@@ -15,7 +15,7 @@ import sys
 
 from werkzeug.security import generate_password_hash
 
-import supabase_client
+import neon_client as supabase_client
 
 
 def parse_args() -> argparse.Namespace:

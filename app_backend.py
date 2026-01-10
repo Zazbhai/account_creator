@@ -13,7 +13,7 @@ from pathlib import Path
 from datetime import datetime
 import json
 import caller
-import supabase_client
+import neon_client as supabase_client
 import payment
 
 # Load environment variables from .env file if it exists
@@ -66,23 +66,19 @@ if not USERS_FILE.exists():
         json.dump({"users": []}, f)
 
 def load_users():
-    # Prefer Supabase users table if configured, otherwise fall back to local file.
-    if supabase_client.is_enabled():
-        try:
-            return supabase_client.get_all_users()
-        except Exception as e:
-            print(f"[WARN] Supabase load_users failed, falling back to file: {e}")
+    """Load users from Neon database only (no file fallback)."""
+    if not supabase_client.is_enabled():
+        raise RuntimeError("Database not configured - cannot load users")
     try:
-        with open(USERS_FILE, 'r') as f:
-            data = json.load(f)
-            return data.get("users", [])
-    except Exception:
-        return []
+        return supabase_client.get_all_users()
+    except Exception as e:
+        print(f"[ERROR] Failed to load users from database: {e}")
+        raise
 
 def save_users(users):
-    # Only used in file-based mode; Supabase paths call supabase_client helpers directly.
-    with open(USERS_FILE, 'w') as f:
-        json.dump({"users": users}, f, indent=2)
+    """Deprecated - users are saved directly via supabase_client methods."""
+    print("[WARN] save_users() called but users should be saved via database methods directly")
+    pass
 
 
 def _find_user_by_id(user_id):
@@ -108,39 +104,23 @@ def get_wallet_balance_for_user(user_id: int) -> float:
 def add_funds_to_user(user_id: int, amount: float) -> float:
     """
     Add amount to the user's internal wallet balance and return the new balance.
-    - When Supabase is enabled, we PATCH the users table (wallet_balance column).
-    - In file-based mode, we update users.json.
+    Saves directly to database only.
     """
     if amount <= 0:
         return get_wallet_balance_for_user(user_id)
 
-    users = load_users()
-    current_balance = 0.0
-    found = False
+    if not supabase_client.is_enabled():
+        raise RuntimeError("Database not configured - cannot add funds")
 
-    for u in users:
-        if u.get("id") == user_id:
-            try:
-                current_balance = float(u.get("wallet_balance") or 0.0)
-            except (TypeError, ValueError):
-                current_balance = 0.0
-            new_balance = current_balance + amount
-            u["wallet_balance"] = new_balance
-            found = True
-            break
+    current_balance = get_wallet_balance_for_user(user_id)
+    new_balance = current_balance + amount
 
-    if not found:
-        # No user record found in local list; just treat previous as zero.
-        new_balance = amount
-
-    # Persist depending on storage backend
-    if supabase_client.is_enabled():
-        try:
-            supabase_client.update_user_wallet(user_id, new_balance)
-        except Exception as e:
-            print(f"[WARN] Supabase update_user_wallet failed: {e}")
-    else:
-        save_users(users)
+    try:
+        supabase_client.update_user_wallet(user_id, new_balance)
+        print(f"[DEBUG] Added ₹{amount:.2f} to user {user_id}, new balance: ₹{new_balance:.2f}")
+    except Exception as e:
+        print(f"[ERROR] Failed to update wallet balance in database: {e}")
+        raise
 
     return new_balance
 
@@ -170,143 +150,64 @@ DEFAULT_MARGIN_PER_ACCOUNT = 2.5
 
 def load_api_settings() -> dict:
     """
-    Load API settings for Temporasms (URL, service, operator, country, default price).
-    Priority: Supabase database > JSON file > defaults.
-    Always sync database values to JSON file for backup.
+    Load API settings from Neon database only.
+    Returns database values merged with defaults, or just defaults if database has no settings yet.
     """
-    import time
-    # #region agent log
-    try:
-        with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-            log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:158","message":"load_api_settings entry","data":{"file_exists":API_SETTINGS_FILE.exists(),"supabase_enabled":supabase_client.is_enabled()},"timestamp":int(time.time()*1000)}) + "\n")
-    except: pass
-    # #endregion
-    
-    # Priority 1: Try Supabase database first (source of truth)
+    # Load from database (single source of truth)
     if supabase_client.is_enabled():
         try:
             row = supabase_client.get_api_settings()
-            # #region agent log
-            try:
-                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-                    log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:167","message":"Supabase get_api_settings result","data":{"has_row":bool(row),"row_data":row if row else None},"timestamp":int(time.time()*1000)}) + "\n")
-            except: pass
-            # #endregion
             if row:
                 # Merge with defaults to ensure all keys exist
                 merged = {**DEFAULT_API_SETTINGS, **row}
-                # Sync to JSON file for backup
-                try:
-                    with open(API_SETTINGS_FILE, "w", encoding='utf-8') as f:
-                        json.dump(merged, f, indent=2)
-                    # #region agent log
-                    try:
-                        with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-                            log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:175","message":"Loaded from Supabase and synced to JSON","data":{"base_url":merged.get("base_url"),"service":merged.get("service"),"operator":merged.get("operator"),"country":merged.get("country")},"timestamp":int(time.time()*1000)}) + "\n")
-                    except: pass
-                    # #endregion
-                    print(f"[DEBUG] [load_api_settings] Loaded from Supabase and synced to JSON: {merged}")
-                except Exception as e:
-                    print(f"[WARN] Failed to sync to api_settings.json: {e}")
+                print(f"[DEBUG] [load_api_settings] Loaded from database: {merged}")
                 return merged
+            else:
+                print(f"[DEBUG] [load_api_settings] No settings in database yet, using defaults")
         except Exception as e:
-            print(f"[WARN] Supabase get_api_settings failed: {e}")
-            # #region agent log
-            try:
-                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-                    log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:183","message":"Supabase get_api_settings exception","data":{"error":str(e)},"timestamp":int(time.time()*1000)}) + "\n")
-            except: pass
-            # #endregion
-
-    # Priority 2: Fall back to JSON file if Supabase not available or failed
-    if API_SETTINGS_FILE.exists():
-        try:
-            with open(API_SETTINGS_FILE, "r", encoding='utf-8') as f:
-                data = json.load(f)
-            # Merge with defaults to ensure all keys exist
-            merged = {**DEFAULT_API_SETTINGS, **data}
-            # #region agent log
-            try:
-                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-                    log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:193","message":"Loaded from JSON file (Supabase unavailable)","data":{"base_url":merged.get("base_url"),"service":merged.get("service"),"operator":merged.get("operator"),"country":merged.get("country")},"timestamp":int(time.time()*1000)}) + "\n")
-            except: pass
-            # #endregion
-            print(f"[DEBUG] [load_api_settings] Loaded from JSON file: {merged}")
-            return merged
-        except Exception as e:
-            print(f"[WARN] Failed to load api_settings.json: {e}, using defaults")
-            # #region agent log
-            try:
-                with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-                    log_file.write(json.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:200","message":"JSON file load failed","data":{"error":str(e)},"timestamp":int(time.time()*1000)}) + "\n")
-            except: pass
-            # #endregion
-
-    # Priority 3: Fall back to defaults and create JSON file
-    if not API_SETTINGS_FILE.exists():
-        try:
-            with open(API_SETTINGS_FILE, "w", encoding='utf-8') as f:
-                json.dump(DEFAULT_API_SETTINGS, f, indent=2)
-            print(f"[DEBUG] [load_api_settings] Created default JSON file")
-        except Exception as e:
-            print(f"[WARN] Failed to create api_settings.json: {e}")
+            print(f"[ERROR] [load_api_settings] Database query failed: {e}")
+            raise RuntimeError(f"Failed to load API settings from database: {e}")
+    else:
+        raise RuntimeError("Database not configured - cannot load API settings")
     
+    # No settings in database yet, return defaults
     return DEFAULT_API_SETTINGS.copy()
 
 
 def get_margin_per_account(user_id: int) -> float:
     """
-    Resolve the margin fee per account for a specific user, in rupees.
-    Preference order:
-      1) Supabase margin_fees table (per_account_fee for user_id)
-      2) Local margin_fees.json file (legacy fallback)
-      3) DEFAULT_MARGIN_PER_ACCOUNT constant
+    Get the margin fee per account for a specific user from database only.
+    Returns user's margin fee from database, or default if not set.
     """
-    fee = DEFAULT_MARGIN_PER_ACCOUNT
+    if not supabase_client.is_enabled():
+        return DEFAULT_MARGIN_PER_ACCOUNT
 
-    # Supabase source - per-user margin fees
-    if supabase_client.is_enabled():
-        try:
-            row = supabase_client.get_margin_fee_by_user(user_id)
-            if row and row.get("per_account_fee") is not None:
-                fee = float(row["per_account_fee"])
-        except Exception as e:
-            print(f"[WARN] Supabase get_margin_fee_by_user failed for user {user_id}, using fallback: {e}")
-
-    # Local file fallback if Supabase not configured or returned nothing
-    if (not supabase_client.is_enabled()) or (fee == DEFAULT_MARGIN_PER_ACCOUNT):
-        if MARGIN_FEES_FILE.exists():
-            try:
-                with open(MARGIN_FEES_FILE, "r") as f:
-                    data = json.load(f) or {}
-                local_fee = float(data.get("per_account_fee") or fee)
-                if local_fee > 0:
-                    fee = local_fee
-            except Exception:
-                pass
-
-    # Ensure a sane positive value
     try:
-        if fee <= 0:
-            fee = DEFAULT_MARGIN_PER_ACCOUNT
-    except Exception:
-        fee = DEFAULT_MARGIN_PER_ACCOUNT
+        row = supabase_client.get_margin_fee_by_user(user_id)
+        if row and row.get("per_account_fee") is not None:
+            fee = float(row["per_account_fee"])
+            if fee > 0:
+                return fee
+    except Exception as e:
+        print(f"[ERROR] Failed to get margin fee from database for user {user_id}: {e}")
 
-    return fee
+    return DEFAULT_MARGIN_PER_ACCOUNT
 
 
 def get_user_margin_balance(user_id: int) -> float:
     """
-    Get the margin_balance for a specific user from margin_fees table.
+    Get the margin_balance for a specific user from margin_fees table (database only).
     Falls back to wallet_balance from users table if margin_fees row doesn't exist.
     """
-    if supabase_client.is_enabled():
-        try:
-            row = supabase_client.get_margin_fee_by_user(user_id)
-            if row and row.get("margin_balance") is not None:
-                return float(row["margin_balance"])
-        except Exception as e:
-            print(f"[WARN] Supabase get_margin_fee_by_user failed for user {user_id}: {e}")
+    if not supabase_client.is_enabled():
+        return 0.0
+
+    try:
+        row = supabase_client.get_margin_fee_by_user(user_id)
+        if row and row.get("margin_balance") is not None:
+            return float(row["margin_balance"])
+    except Exception as e:
+        print(f"[ERROR] Failed to get margin balance from database for user {user_id}: {e}")
     
     # Fallback to wallet_balance from users table
     return get_wallet_balance_for_user(user_id)
@@ -552,39 +453,26 @@ def get_user_by_username(username):
     return None
 
 def create_user(username, password_hash, role="user", expiry_days=None):
-    user_id = None
-    if supabase_client.is_enabled():
-        try:
-            user_id = supabase_client.create_user(username, password_hash, role, expiry_days)
-            # Create default margin_fees row for the new user
-            if user_id:
-                try:
-                    supabase_client.upsert_margin_fee_for_user(
-                        user_id=user_id,
-                        per_account_fee=DEFAULT_MARGIN_PER_ACCOUNT,
-                        margin_balance=0.0,
-                    )
-                except Exception as e:
-                    print(f"[WARN] Failed to create default margin_fees for user {user_id}: {e}")
-            return user_id
-        except Exception as e:
-            print(f"[WARN] Supabase create_user failed, falling back to file: {e}")
-    users = load_users()
-    user_id = len(users) + 1
-    expiry_date = None
-    if expiry_days:
-        from datetime import date, timedelta
-        expiry_date = (date.today() + timedelta(days=expiry_days)).isoformat()
-    users.append({
-        "id": user_id,
-        "username": username,
-        "password_hash": password_hash,
-        "role": role,
-        "expiry_date": expiry_date,
-        "created_at": datetime.now().isoformat()
-    })
-    save_users(users)
-    return user_id
+    """Create user in database only (no file fallback)."""
+    if not supabase_client.is_enabled():
+        raise RuntimeError("Database not configured - cannot create user")
+    
+    try:
+        user_id = supabase_client.create_user(username, password_hash, role, expiry_days)
+        # Create default margin_fees row for the new user
+        if user_id:
+            try:
+                supabase_client.upsert_margin_fee_for_user(
+                    user_id=user_id,
+                    per_account_fee=DEFAULT_MARGIN_PER_ACCOUNT,
+                    margin_balance=0.0,
+                )
+            except Exception as e:
+                print(f"[WARN] Failed to create default margin_fees for user {user_id}: {e}")
+        return user_id
+    except Exception as e:
+        print(f"[ERROR] Failed to create user in database: {e}")
+        raise
 
 # Initialize default admin user if no users exist
 if not load_users():
@@ -1655,27 +1543,18 @@ def admin_api_settings():
         "wait_for_second_otp": wait_for_second_otp,
     }
 
-    # Always write to JSON file first (source of truth)
+    # Save to database only (single source of truth)
+    if not supabase_client.is_enabled():
+        return jsonify({"error": "Database not configured"}), 500
+
     try:
-        with open(API_SETTINGS_FILE, "w", encoding='utf-8') as f:
-            json.dump(new_settings, f, indent=2)
-        print(f"[DEBUG] [admin_api_settings] Saved to JSON file: {new_settings}")
+        supabase_client.upsert_api_settings(new_settings)
+        print(f"[DEBUG] [admin_api_settings] Successfully saved to database: {new_settings}")
+        return jsonify({"success": True, "settings": new_settings})
     except Exception as e:
-        return jsonify({"error": f"Failed to save to JSON file: {str(e)}"}), 400
-
-    # Then sync to Supabase if available
-    if supabase_client.is_enabled():
-        try:
-            supabase_client.upsert_api_settings(new_settings)
-            print(f"[DEBUG] [admin_api_settings] Successfully synced to Supabase")
-        except Exception as e:
-            error_msg = f"Failed to save to Supabase database: {str(e)}"
-            print(f"[ERROR] [admin_api_settings] {error_msg}")
-            # Don't fail the whole request if Supabase fails - JSON file is saved
-            # But log it clearly so admin knows
-            return jsonify({"success": True, "settings": new_settings, "warning": error_msg}), 200
-
-    return jsonify({"success": True, "settings": new_settings})
+        error_msg = f"Failed to save API settings to database: {str(e)}"
+        print(f"[ERROR] [admin_api_settings] {error_msg}")
+        return jsonify({"error": error_msg}), 500
 
 
 @app.route('/api/admin/margin-fees', methods=['GET', 'POST'])
