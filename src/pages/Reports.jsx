@@ -239,7 +239,7 @@ export default function Reports() {
 
           <div className="report-header">
 
-            <h3>Used Emails</h3>
+            <h3>Used Emails <span className="count-badge">{usedEmails.length}</span></h3>
 
             <button type="button" onClick={downloadUsedEmails}>
 
@@ -279,7 +279,7 @@ export default function Reports() {
 
           <div className="report-header">
 
-            <h3>Failed Numbers</h3>
+            <h3>Failed Numbers <span className="count-badge">{failedNumbers.length}</span></h3>
 
             <button type="button" onClick={downloadFailedNumbers}>
 
@@ -319,7 +319,7 @@ export default function Reports() {
 
           <div className="report-header">
 
-            <h3>Failed Emails (use_first_mails.txt)</h3>
+            <h3>Failed Emails (use_first_mails.txt) <span className="count-badge">{failedEmails.length}</span></h3>
 
             <div style={{ display: 'flex', gap: '8px' }}>
 

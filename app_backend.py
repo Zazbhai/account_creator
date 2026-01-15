@@ -2172,12 +2172,133 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                 f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {completion_msg}\n")
         except Exception:
             pass
-    finally:
         try:
             if completion_file.exists():
                 completion_file.unlink()
         except Exception:
             pass
+
+# Reports API endpoints
+REPORTS_DIR = Path("reports")
+REPORTS_DIR.mkdir(exist_ok=True)
+
+@app.route('/api/reports/used-emails', methods=['GET'])
+@login_required
+def api_reports_used_emails():
+    """Get list of used emails with total count."""
+    user_id = session.get('user_id')
+    download = request.args.get('download') == '1'
+    
+    # Check both global and per-user files
+    global_file = REPORTS_DIR / "used_emails.txt"
+    per_user_file = REPORTS_DIR / f"used_emails_user{user_id}.txt"
+    
+    emails = []
+    
+    # Read from per-user file first
+    if per_user_file.exists():
+        try:
+            with open(per_user_file, 'r', encoding='utf-8-sig') as f:
+                for line in f:
+                    email = line.strip()
+                    if email and email not in emails:
+                        emails.append(email)
+        except Exception as e:
+            print(f"[WARN] Failed to read per-user emails file: {e}")
+    
+    # Read from global file
+    if global_file.exists():
+        try:
+            with open(global_file, 'r', encoding='utf-8-sig') as f:
+                for line in f:
+                    email = line.strip()
+                    if email and email not in emails:
+                        emails.append(email)
+        except Exception as e:
+            print(f"[WARN] Failed to read global emails file: {e}")
+    
+    if download:
+        # Return as downloadable file
+        content = "\n".join(emails)
+        from io import BytesIO
+        buffer = BytesIO(content.encode('utf-8'))
+        buffer.seek(0)
+        return send_file(buffer, as_attachment=True, download_name='used_emails.txt', mimetype='text/plain')
+    else:
+        # Return JSON with count
+        return jsonify({"items": emails, "count": len(emails)})
+
+@app.route('/api/reports/failed-numbers', methods=['GET'])
+@login_required
+def api_reports_failed_numbers():
+    """Get list of failed numbers with total count."""
+    download = request.args.get('download') == '1'
+    
+    failed_file = REPORTS_DIR / "failed_numbers.txt"
+    numbers = []
+    
+    if failed_file.exists():
+        try:
+            with open(failed_file, 'r', encoding='utf-8-sig') as f:
+                for line in f:
+                    number = line.strip()
+                    if number:
+                        numbers.append(number)
+        except Exception as e:
+            print(f"[WARN] Failed to read failed numbers file: {e}")
+    
+    if download:
+        content = "\n".join(numbers)
+        from io import BytesIO
+        buffer = BytesIO(content.encode('utf-8'))
+        buffer.seek(0)
+        return send_file(buffer, as_attachment=True, download_name='failed_numbers.txt', mimetype='text/plain')
+    else:
+        return jsonify({"items": numbers, "count": len(numbers)})
+
+@app.route('/api/reports/failed-emails', methods=['GET', 'POST'])
+@login_required
+def api_reports_failed_emails():
+    """Get or update list of failed emails (use_first_mails.txt) with total count."""
+    failed_file = REPORTS_DIR / "use_first_mails.txt"
+    
+    if request.method == 'POST':
+        # Update failed emails file
+        data = request.json or {}
+        content = data.get('content', '')
+        
+        try:
+            with open(failed_file, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return jsonify({"success": True, "message": "Failed emails updated successfully"})
+        except Exception as e:
+            return jsonify({"error": f"Failed to update file: {str(e)}"}), 500
+    
+    else:
+        # GET request
+        download = request.args.get('download') == '1'
+        emails = []
+        content = ""
+        
+        if failed_file.exists():
+            try:
+                with open(failed_file, 'r', encoding='utf-8-sig') as f:
+                    content = f.read()
+                    for line in content.splitlines():
+                        email = line.strip()
+                        if email:
+                            emails.append(email)
+            except Exception as e:
+                print(f"[WARN] Failed to read failed emails file: {e}")
+        
+        if download:
+            from io import BytesIO
+            buffer = BytesIO(content.encode('utf-8'))
+            buffer.seek(0)
+            return send_file(buffer, as_attachment=True, download_name='use_first_mails.txt', mimetype='text/plain')
+        else:
+            return jsonify({"items": emails, "count": len(emails), "content": content})
+
 
 # Serve React app
 @app.route('/', defaults={'path': ''})
