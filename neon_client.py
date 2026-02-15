@@ -373,6 +373,67 @@ def update_user_wallet(user_id: int, wallet_balance: float) -> None:
 # ===== Margin fees (per-user config) =====
 
 
+def atomic_margin_update(
+    user_id: int, 
+    amount_delta: float, 
+    fallback_start_balance: float = 0.0,
+    default_per_account_fee: float = 2.5
+) -> Optional[float]:
+    """
+    Atomically update user's margin_balance.
+    - Locks the row if it exists.
+    - If row exists: margin_balance += amount_delta.
+    - If row missing: inserts new row with margin_balance = fallback_start_balance + amount_delta.
+    Returns the new balance.
+    """
+    if not is_enabled():
+        return None
+    
+    conn = None
+    try:
+        conn = _get_connection()
+        # Start transaction
+        with conn.cursor() as cursor:
+            # Try to select for update to lock the row
+            cursor.execute("SELECT id, margin_balance FROM margin_fees WHERE user_id = %s FOR UPDATE", (user_id,))
+            row = cursor.fetchone()
+            
+            now_iso = datetime.datetime.utcnow().isoformat()
+            new_balance = 0.0
+            
+            if row:
+                row_id, current_bal = row
+                current_bal = float(current_bal) if current_bal is not None else 0.0
+                new_balance = current_bal + amount_delta
+                
+                cursor.execute(
+                    "UPDATE margin_fees SET margin_balance = %s, updated_at = %s WHERE id = %s",
+                    (new_balance, now_iso, row_id)
+                )
+            else:
+                # Row doesn't exist, create it
+                new_balance = fallback_start_balance + amount_delta
+                cursor.execute(
+                    """
+                    INSERT INTO margin_fees (user_id, per_account_fee, margin_balance, updated_at)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (user_id, default_per_account_fee, new_balance, now_iso)
+                )
+            
+            conn.commit()
+            return new_balance
+            
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        print(f"[NEON] atomic_margin_update failed: {e}")
+        raise
+    finally:
+        if conn:
+            _release_connection(conn)
+
+
 def get_margin_fee_by_user(user_id: int) -> Optional[Dict[str, Any]]:
     """Fetch the margin_fees row for a given user_id."""
     if not is_enabled():

@@ -254,12 +254,15 @@ async def main():
                 async with async_playwright() as p:
                     try:
                         print("[DEBUG] Launching browser...")
-                        browser = await p.chromium.launch(headless=True)
+                        browser = await p.chromium.launch(headless=False)
                         context = await browser.new_context()
                         page = await context.new_page()
                         # ---- GENERATE EMAIL ----
                         flipkart_email = await asyncio.to_thread(imap.generate_flipkart_email)
                         print(f"[DEBUG] Generated Flipkart email: {flipkart_email}")
+                        
+                        # Report to backend that we started with this email (allows cleanup on stop)
+                        await asyncio.to_thread(_report_account_status, "started", flipkart_email)
 
                         # ---- GET NUMBER FROM API ----
                         print("[DEBUG] Fetching number from API...")
@@ -912,6 +915,8 @@ async def main():
                 # Track failed email for reuse
                 if flipkart_email:
                     await asyncio.to_thread(imap.add_failed_email, flipkart_email)
+                    # Unreserve email so it can be reused
+                    await asyncio.to_thread(imap.unreserve_email, flipkart_email)
                 
                 # Report account failure to backend for margin_balance refund
                 await asyncio.to_thread(_report_account_status, "failed", flipkart_email if flipkart_email else None)
@@ -929,6 +934,8 @@ async def main():
                 # Track failed email for reuse
                 if flipkart_email:
                     await asyncio.to_thread(imap.add_failed_email, flipkart_email)
+                    # Unreserve email so it can be reused
+                    await asyncio.to_thread(imap.unreserve_email, flipkart_email)
                 
                 # Report account failure to backend for margin_balance refund (stop button pressed)
                 await asyncio.to_thread(_report_account_status, "failed", flipkart_email if flipkart_email else None)
@@ -980,6 +987,8 @@ async def main():
                 # Track failed email for reuse
                 if flipkart_email:
                     await asyncio.to_thread(imap.add_failed_email, flipkart_email)
+                    # Unreserve email so it can be reused
+                    await asyncio.to_thread(imap.unreserve_email, flipkart_email)
                 
                 # Report account failure to backend for margin_balance refund
                 await asyncio.to_thread(_report_account_status, "failed", flipkart_email if flipkart_email else None)

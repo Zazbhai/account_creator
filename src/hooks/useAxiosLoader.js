@@ -43,12 +43,18 @@ function initInterceptors() {
       const timestamp = new Date().toISOString()
       config.metadata = { requestId, startTime: Date.now() }
 
+      // IMPORTANT: Add header to bypass ngrok's browser warning page
+      // This prevents 511 errors on ngrok free tier
+      config.headers = config.headers || {}
+      config.headers['ngrok-skip-browser-warning'] = 'true'
+      config.headers['User-Agent'] = 'CustomClient/1.0'
+
       // Log request details
       console.group(`🚀 [API REQUEST #${requestId}] ${config.method?.toUpperCase() || 'GET'} ${config.url || config.baseURL}`)
       console.log('📅 Timestamp:', timestamp)
       console.log('🔗 Full URL:', config.url || `${config.baseURL}${config.url}`)
       console.log('📤 Headers:', formatHeaders(config.headers || {}))
-      
+
       // Log request data (if present)
       if (config.data) {
         if (config.data instanceof FormData || config.data instanceof URLSearchParams) {
@@ -57,11 +63,11 @@ function initInterceptors() {
           console.log('📦 Data:', typeof config.data === 'string' ? config.data.substring(0, 200) : config.data)
         }
       }
-      
+
       if (config.params) {
         console.log('🔍 Query Params:', config.params)
       }
-      
+
       console.log('⚙️ Config:', {
         timeout: config.timeout,
         withCredentials: config.withCredentials,
@@ -100,7 +106,7 @@ function initInterceptors() {
       console.log('⏱️ Duration:', `${duration}ms`)
       console.log('📊 Status:', `${response.status} ${response.statusText}`)
       console.log('📥 Response Headers:', formatHeaders(response.headers || {}))
-      
+
       // Log response data (truncate if too large)
       // Handle different response types safely
       try {
@@ -145,7 +151,7 @@ function initInterceptors() {
       console.group(`❌ [API ERROR #${requestId}] ${cfg.method?.toUpperCase() || 'GET'} ${cfg.url || cfg.baseURL}`)
       console.log('📅 Timestamp:', timestamp)
       console.log('⏱️ Duration:', `${duration}ms`)
-      
+
       if (error.response) {
         // Server responded with error status
         console.error('📊 Status:', `${error.response.status} ${error.response.statusText}`)
@@ -163,7 +169,7 @@ function initInterceptors() {
         // Error in request setup
         console.error('⚠️ Error setting up request:', error.message)
       }
-      
+
       console.error('🔍 Full Error:', error)
       if (error.stack) {
         console.error('📚 Stack Trace:', error.stack)

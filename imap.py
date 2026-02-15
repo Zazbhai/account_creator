@@ -71,6 +71,7 @@ CONFIG_PATH = os.path.abspath(os.path.join(BASE_DIR, "imap_config.json"))
 COUNTER_FILE = os.path.abspath(os.path.join(BASE_DIR, "flipkart_counter.json"))
 COUNTER_LOCK_FILE = os.path.abspath(os.path.join(BASE_DIR, "flipkart_counter.lock"))
 FAILED_EMAILS_FILE = os.path.abspath(os.path.join(BASE_DIR, "use_first_mails.txt"))
+FAILED_EMAILS_LOCK_FILE = os.path.abspath(os.path.join(BASE_DIR, "use_first_mails.lock"))
 EMAIL_GEN_LOCK_FILE = os.path.abspath(os.path.join(BASE_DIR, "email_generation.lock"))
 RESERVED_EMAILS_FILE = os.path.abspath(os.path.join(BASE_DIR, "reserved_emails.txt"))
 
@@ -81,6 +82,57 @@ REPORTS_DIR = Path(BASE_DIR)
 _counter_lock = threading.Lock()
 _failed_emails_lock = threading.Lock()
 _email_generation_lock = threading.Lock()  # Lock for entire email generation to prevent race conditions
+
+# ==========================================================
+# ROBUST FILE HELPERS
+# ==========================================================
+def _safe_write_lines(filepath, lines):
+    """Write lines to a file atomically using a temporary file and rename."""
+    temp_path = str(filepath) + ".tmp"
+    try:
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        
+        with open(temp_path, 'w', encoding='utf-8', newline='\n') as f:
+            for line in lines:
+                f.write(f"{line.strip()}\n")
+            f.flush()
+            os.fsync(f.fileno()) # Ensure it's on disk
+        
+        # Atomic replacement
+        if os.path.exists(filepath):
+            os.replace(temp_path, filepath)
+        else:
+            os.rename(temp_path, filepath)
+        return True
+    except Exception as e:
+        print(f"[ERROR] [imap] Robust write failed for {filepath}: {e}")
+        if os.path.exists(temp_path):
+            try: os.remove(temp_path)
+            except: pass
+        return False
+
+def _safe_save_json(filepath, data):
+    """Save JSON data atomically."""
+    temp_path = str(filepath) + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+            f.flush()
+            os.fsync(f.fileno())
+        
+        if os.path.exists(filepath):
+            os.replace(temp_path, filepath)
+        else:
+            os.rename(temp_path, filepath)
+        return True
+    except Exception as e:
+        print(f"[ERROR] [imap] Robust JSON save failed for {filepath}: {e}")
+        if os.path.exists(temp_path):
+            try: os.remove(temp_path)
+            except: pass
+        return False
 
 
 # ==========================================================
@@ -332,11 +384,11 @@ def _get_next_counter() -> int:
                 counter = 0
         
         counter += 1
-        try:
-            with open(COUNTER_FILE, 'w') as f:
-                json.dump({"counter": counter}, f, indent=2)
-        except:
-            pass
+        if _safe_save_json(COUNTER_FILE, {"counter": counter}):
+             # Success
+             pass
+        else:
+             print(f"[WARN] [imap._get_next_counter] Failed to save counter robustly")
         
         return counter
 
@@ -347,259 +399,180 @@ def _get_next_counter() -> int:
 def add_failed_email(email: str) -> None:
     """
     Add a failed email to use_first_mails.txt for reuse in future sessions.
-    Thread-safe and cross-process safe. Uses file locking to prevent race conditions.
+    Thread-safe and cross-process safe using file-based locking.
     """
     if not email or not isinstance(email, str):
         return
     
-    # Validate email format (basic check)
     email = email.strip()
     if not email or "@" not in email:
         print(f"[WARN] [imap.add_failed_email] Invalid email format: {email}")
         return
     
-    max_retries = 10
+    max_retries = 20
     retry_delay = 0.1
     
-    # Use thread lock to prevent race conditions
     with _failed_emails_lock:
         for attempt in range(max_retries):
+            lock_fd = None
+            lock_file_obj = None
+            lock_acquired = False
+            
             try:
-                # Read existing failed emails (atomic read)
+                # Acquire file lock for use_first_mails.txt
+                if HAS_FCNTL:
+                    lock_fd = os.open(FAILED_EMAILS_LOCK_FILE, os.O_CREAT | os.O_WRONLY)
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_acquired = True
+                elif HAS_MSVCRT:
+                    lock_file_obj = open(FAILED_EMAILS_LOCK_FILE, 'ab')
+                    lock_fd = lock_file_obj.fileno()
+                    msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+                    lock_acquired = True
+                
+                # Now we have the lock, read and update
                 failed_emails = []
                 if os.path.exists(FAILED_EMAILS_FILE):
-                    try:
-                        # Read with UTF-8 encoding and handle BOM
-                        with open(FAILED_EMAILS_FILE, 'r', encoding='utf-8-sig') as f:
-                            content = f.read()
-                            # Strip BOM if present
-                            if content.startswith('\ufeff'):
-                                content = content[1:]
-                            failed_emails = [line.strip() for line in content.splitlines() if line.strip()]
-                    except UnicodeDecodeError as e:
-                        # Try reading with different encoding if UTF-8 fails
-                        try:
-                            with open(FAILED_EMAILS_FILE, 'r', encoding='latin-1') as f:
-                                content = f.read()
-                                if content.startswith('\ufeff'):
-                                    content = content[1:]
-                                failed_emails = [line.strip() for line in content.splitlines() if line.strip()]
-                        except Exception as e2:
-                            print(f"[WARN] [imap.add_failed_email] Failed to read file: {e2}")
-                            failed_emails = []
-                    except (IOError, ValueError, Exception) as e:
-                        print(f"[WARN] [imap.add_failed_email] Failed to read file: {e}")
-                        failed_emails = []
+                    with open(FAILED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
+                        failed_emails = [line.strip() for line in f if line.strip()]
                 
-                # Add email if not already present (prevent duplicates)
                 if email not in failed_emails:
                     failed_emails.append(email)
-                    
-                    # Write back to file (atomic write)
-                    # Use 'utf-8' (not 'utf-8-sig') to avoid writing BOM
-                    try:
-                        with open(FAILED_EMAILS_FILE, 'w', encoding='utf-8', newline='\n') as f:
-                            for failed_email in failed_emails:
-                                f.write(f"{failed_email}\n")
-                        
-                        print(f"[IMAP] Added failed email to use_first_mails.txt: {email} (total: {len(failed_emails)})")
-                    except Exception as e:
-                        print(f"[ERROR] [imap.add_failed_email] Failed to write file: {e}")
-                        if attempt == max_retries - 1:
-                            return
-                        time.sleep(retry_delay)
-                        continue
-                else:
-                    print(f"[DEBUG] [imap.add_failed_email] Email {email} already in use_first_mails.txt (skipping)")
-                break
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    print(f"[ERROR] [imap.add_failed_email] Failed after {max_retries} attempts: {e}")
-                else:
+                    if _safe_write_lines(FAILED_EMAILS_FILE, failed_emails):
+                        print(f"[IMAP] Added email to use_first_mails.txt: {email} (total: {len(failed_emails)})")
+                    else:
+                        print(f"[ERROR] [imap.add_failed_email] Failed to write failed emails robustly")
+                
+                break # Success
+            except (IOError, OSError):
+                if attempt < max_retries - 1:
                     time.sleep(retry_delay)
+                    continue
+            finally:
+                if lock_acquired:
+                    if HAS_FCNTL and lock_fd:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                        os.close(lock_fd)
+                    elif HAS_MSVCRT and lock_file_obj:
+                        msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
+                        lock_file_obj.close()
 
 
 def get_and_remove_failed_email():
     """
     Get the first failed email from use_first_mails.txt and remove it atomically.
-    Returns the email if found, None otherwise.
-    Thread-safe and cross-process safe. Uses file locking to prevent race conditions.
+    Thread-safe and cross-process safe using file-based locking.
     """
-    max_retries = 10
+    max_retries = 20
     retry_delay = 0.1
     
-    # Use thread lock to prevent race conditions within the same process
     with _failed_emails_lock:
         for attempt in range(max_retries):
+            lock_fd = None
+            lock_file_obj = None
+            lock_acquired = False
+            
             try:
                 if not os.path.exists(FAILED_EMAILS_FILE):
-                    print(f"[DEBUG] [imap.get_and_remove_failed_email] use_first_mails.txt does not exist yet")
                     return None
                 
-                # Read existing failed emails (atomic read)
+                # Acquire file lock
+                if HAS_FCNTL:
+                    lock_fd = os.open(FAILED_EMAILS_LOCK_FILE, os.O_CREAT | os.O_WRONLY)
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_acquired = True
+                elif HAS_MSVCRT:
+                    lock_file_obj = open(FAILED_EMAILS_LOCK_FILE, 'ab')
+                    lock_fd = lock_file_obj.fileno()
+                    msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+                    lock_acquired = True
+                
+                # Lock acquired, read
                 failed_emails = []
-                try:
-                    # Read with UTF-8 encoding and handle BOM (Byte Order Mark)
-                    with open(FAILED_EMAILS_FILE, 'r', encoding='utf-8-sig') as f:
-                        content = f.read()
-                        # Strip BOM if present (utf-8-sig should handle it, but double-check)
-                        if content.startswith('\ufeff'):
-                            content = content[1:]
-                        print(f"[DEBUG] [imap.get_and_remove_failed_email] File content (raw): {repr(content[:100])}")  # First 100 chars only
-                        failed_emails = [line.strip() for line in content.splitlines() if line.strip()]
-                        print(f"[DEBUG] [imap.get_and_remove_failed_email] Parsed {len(failed_emails)} email(s): {failed_emails}")
-                except UnicodeDecodeError as e:
-                    # Try reading with different encoding if UTF-8 fails
-                    print(f"[WARN] [imap.get_and_remove_failed_email] UTF-8 decode failed, trying latin-1: {e}")
-                    try:
-                        with open(FAILED_EMAILS_FILE, 'r', encoding='latin-1') as f:
-                            content = f.read()
-                            # Remove BOM if present
-                            if content.startswith('\ufeff'):
-                                content = content[1:]
-                            failed_emails = [line.strip() for line in content.splitlines() if line.strip()]
-                            print(f"[DEBUG] [imap.get_and_remove_failed_email] Parsed {len(failed_emails)} email(s) with latin-1: {failed_emails}")
-                    except Exception as e2:
-                        print(f"[ERROR] [imap.get_and_remove_failed_email] Failed to read file with latin-1: {e2}")
-                        import traceback
-                        traceback.print_exc()
-                        return None
-                except (IOError, ValueError, Exception) as e:
-                    print(f"[WARN] [imap.get_and_remove_failed_email] Failed to read file: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    return None
+                with open(FAILED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
+                    failed_emails = [line.strip() for line in f if line.strip()]
                 
                 if not failed_emails:
-                    print(f"[DEBUG] [imap.get_and_remove_failed_email] use_first_mails.txt is empty (no emails to reuse)")
+                    _release_email_lock(lock_fd, lock_file_obj)
                     return None
                 
-                # Get first valid email and remove it (atomic operation)
-                email = None
-                valid_emails = []
-                for failed_email in failed_emails:
-                    failed_email = failed_email.strip()
-                    if failed_email and "@" in failed_email:
-                        if email is None:
-                            # First valid email - use it (removed from list)
-                            email = failed_email
-                            print(f"[DEBUG] [imap.get_and_remove_failed_email] Selected email: {email} (removing from file)")
-                        else:
-                            # Keep other valid emails
-                            valid_emails.append(failed_email)
-                    # Skip invalid emails
-                
-                if email is None:
-                    # No valid emails found, clear the file
-                    try:
-                        with open(FAILED_EMAILS_FILE, 'w', encoding='utf-8', newline='\n') as f:
-                            pass  # Create empty file
-                    except Exception as e:
-                        print(f"[WARN] [imap.get_and_remove_failed_email] Failed to clear file: {e}")
-                    return None
-                
-                # Write back remaining valid emails (atomic write - removes the selected email)
-                # Use 'utf-8' (not 'utf-8-sig') to avoid writing BOM
-                try:
-                    with open(FAILED_EMAILS_FILE, 'w', encoding='utf-8', newline='\n') as f:
-                        for valid_email in valid_emails:
-                            f.write(f"{valid_email}\n")
-                    safe_print(f"[IMAP] [OK] Removed email from use_first_mails.txt: {email}")
-                    safe_print(f"[IMAP] [OK] Remaining emails in file: {len(valid_emails)}")
-                    if valid_emails:
-                        safe_print(f"[IMAP] [OK] Remaining emails: {valid_emails}")
-                except Exception as e:
-                    print(f"[ERROR] [imap.get_and_remove_failed_email] Failed to write file: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Don't return the email if we couldn't remove it from file (prevent duplicate use)
-                    return None
-                
-                safe_print(f"[IMAP] [OK] REUSING failed email from use_first_mails.txt: {email}")
-                return email
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    print(f"[ERROR] [imap.get_and_remove_failed_email] Failed after {max_retries} attempts: {e}")
-                    return None
+                # Take the first one and write back remaining
+                selected = failed_emails.pop(0)
+                if _safe_write_lines(FAILED_EMAILS_FILE, failed_emails):
+                    print(f"[IMAP] REUSING email from use_first_mails.txt: {selected}")
+                    _release_email_lock(lock_fd, lock_file_obj)
+                    return selected
                 else:
+                    print(f"[ERROR] [imap.get_and_remove_failed_email] Failed to write back robustly")
+                    _release_email_lock(lock_fd, lock_file_obj)
+                    return None
+                
+            except (IOError, OSError):
+                if attempt < max_retries - 1:
                     time.sleep(retry_delay)
+                    continue
+            finally:
+                if lock_acquired:
+                    _release_email_lock(lock_fd, lock_file_obj)
     
     return None
 
 
 def mark_email_success(email: str) -> None:
     """
-    Remove email from failed emails list if it was successfully used.
-    This is a safety check - the email should already be removed when retrieved,
-    but this ensures it's not in the file if account creation succeeds.
-    Thread-safe and cross-process safe.
+    Remove email from failed emails pool.
+    Thread-safe and cross-process safe using file-based locking.
     """
-    if not email or not isinstance(email, str):
-        return
-    
-    email = email.strip()
     if not email:
         return
     
-    max_retries = 10
+    email = email.strip().lower()
+    max_retries = 20
     retry_delay = 0.1
     
-    # Use thread lock to prevent race conditions
     with _failed_emails_lock:
         for attempt in range(max_retries):
+            lock_fd = None
+            lock_file_obj = None
+            lock_acquired = False
+            
             try:
                 if not os.path.exists(FAILED_EMAILS_FILE):
-                    # File doesn't exist, email is already not in the list - success
-                    print(f"[DEBUG] [imap.mark_email_success] use_first_mails.txt doesn't exist, email {email} already removed")
                     return
                 
-                # Read existing failed emails (atomic read)
+                if HAS_FCNTL:
+                    lock_fd = os.open(FAILED_EMAILS_LOCK_FILE, os.O_CREAT | os.O_WRONLY)
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_acquired = True
+                elif HAS_MSVCRT:
+                    lock_file_obj = open(FAILED_EMAILS_LOCK_FILE, 'ab')
+                    lock_fd = lock_file_obj.fileno()
+                    msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+                    lock_acquired = True
+                
+                # Now we have the lock, read and update
                 failed_emails = []
-                try:
-                    # Read with UTF-8 encoding and handle BOM
-                    with open(FAILED_EMAILS_FILE, 'r', encoding='utf-8-sig') as f:
-                        content = f.read()
-                        # Strip BOM if present
-                        if content.startswith('\ufeff'):
-                            content = content[1:]
-                        failed_emails = [line.strip() for line in content.splitlines() if line.strip()]
-                except UnicodeDecodeError as e:
-                    # Try reading with different encoding if UTF-8 fails
-                    try:
-                        with open(FAILED_EMAILS_FILE, 'r', encoding='latin-1') as f:
-                            content = f.read()
-                            if content.startswith('\ufeff'):
-                                content = content[1:]
-                            failed_emails = [line.strip() for line in content.splitlines() if line.strip()]
-                    except Exception as e2:
-                        print(f"[WARN] [imap.mark_email_success] Failed to read file: {e2}")
-                        return
-                except (IOError, ValueError, Exception) as e:
-                    print(f"[WARN] [imap.mark_email_success] Failed to read file: {e}")
-                    return
+                with open(FAILED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
+                    failed_emails = [line.strip() for line in f if line.strip()]
                 
-                # Remove email if present (safety check - should already be removed)
-                if email in failed_emails:
-                    failed_emails.remove(email)
-                    
-                    # Write back remaining emails (atomic write)
-                    try:
-                        with open(FAILED_EMAILS_FILE, 'w', encoding='utf-8') as f:
-                            for failed_email in failed_emails:
-                                f.write(f"{failed_email}\n")
-                        
-                        print(f"[IMAP] Removed successfully used email from failed list: {email} (was still in file)")
-                    except Exception as e:
-                        print(f"[ERROR] [imap.mark_email_success] Failed to write file: {e}")
-                else:
-                    # Email not in file - already removed (expected behavior)
-                    print(f"[DEBUG] [imap.mark_email_success] Email {email} not in use_first_mails.txt (already removed)")
+                original_len = len(failed_emails)
+                failed_emails = [fe for fe in failed_emails if fe.lower() != email]
+                
+                if len(failed_emails) != original_len:
+                    if _safe_write_lines(FAILED_EMAILS_FILE, failed_emails):
+                        print(f"[IMAP] mark_email_success: Removed {email} from use_first_mails.txt")
+                    else:
+                        print(f"[ERROR] [imap.mark_email_success] Failed to remove email robustly")
+                
+                _release_email_lock(lock_fd, lock_file_obj)
                 break
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    print(f"[ERROR] [imap.mark_email_success] Failed after {max_retries} attempts: {e}")
-                else:
+            except (IOError, OSError):
+                if attempt < max_retries - 1:
                     time.sleep(retry_delay)
+                    continue
+            finally:
+                if lock_acquired:
+                    _release_email_lock(lock_fd, lock_file_obj)
 
 
 # ==========================================================
@@ -609,6 +582,7 @@ def _is_email_used(email: str) -> bool:
     """
     Check if an email exists in used_emails.txt files or reserved_emails.txt.
     Checks both per-user and global used_emails.txt files, and also reserved_emails.txt.
+    Matches primarily based on sequence number (e.g. flipkart1 == admin+flipkart1).
     Thread-safe.
     """
     if not email or "@" not in email:
@@ -617,13 +591,33 @@ def _is_email_used(email: str) -> bool:
     user_id = os.environ.get("USER_ID")
     email_lower = email.strip().lower()
     
+    # Extract number from candidate email
+    candidate_num = None
+    match = re.search(r'flipkart(\d+)@', email_lower)
+    if match:
+        candidate_num = int(match.group(1))
+
+    # Helper to check number match or string match
+    def is_match(line, target_email, target_num):
+        line = line.strip().lower()
+        if not line: return False
+        if line == target_email: return True
+        # Check number match
+        if target_num is not None:
+            m = re.search(r'flipkart(\d+)@', line)
+            if m and int(m.group(1)) == target_num:
+                return True
+        return False
+    
     # Check reserved emails file first (emails currently being used by workers)
     try:
         if os.path.exists(RESERVED_EMAILS_FILE):
-            with open(RESERVED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
+             with open(RESERVED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
                 for line in f:
-                    if line.strip().lower() == email_lower:
-                        print(f"[DEBUG] [imap._is_email_used] Email {email} found in reserved_emails.txt")
+                    # Handle "email|timestamp" format
+                    line_email = line.split('|', 1)[0].strip().lower() if '|' in line else line.strip().lower()
+                    if is_match(line_email, email_lower, candidate_num):
+                        print(f"[DEBUG] [imap._is_email_used] Email {email} (or num {candidate_num}) found in reserved_emails.txt")
                         return True
     except Exception as e:
         print(f"[WARN] [imap._is_email_used] Error checking reserved file: {e}")
@@ -635,8 +629,8 @@ def _is_email_used(email: str) -> bool:
             if per_user_path.exists():
                 with open(per_user_path, 'r', encoding='utf-8-sig', errors='replace') as f:
                     for line in f:
-                        if line.strip().lower() == email_lower:
-                            print(f"[DEBUG] [imap._is_email_used] Email {email} found in per-user used_emails file")
+                        if is_match(line, email_lower, candidate_num):
+                            print(f"[DEBUG] [imap._is_email_used] Email {email} (or num {candidate_num}) found in per-user used_emails file")
                             return True
         except Exception as e:
             print(f"[WARN] [imap._is_email_used] Error checking per-user file: {e}")
@@ -647,13 +641,89 @@ def _is_email_used(email: str) -> bool:
         if global_path.exists():
             with open(global_path, 'r', encoding='utf-8-sig', errors='replace') as f:
                 for line in f:
-                    if line.strip().lower() == email_lower:
-                        print(f"[DEBUG] [imap._is_email_used] Email {email} found in global used_emails file")
+                    if is_match(line, email_lower, candidate_num):
+                        print(f"[DEBUG] [imap._is_email_used] Email {email} (or num {candidate_num}) found in global used_emails file")
                         return True
     except Exception as e:
         print(f"[WARN] [imap._is_email_used] Error checking global file: {e}")
     
     return False
+
+def cleanup_stale_reservations(timeout_minutes: int = 10) -> int:
+    """
+    Remove any reservations older than timeout_minutes from reserved_emails.txt.
+    Self-healing mechanism for crashed workers.
+    Returns the number of removed entries.
+    """
+    if not os.path.exists(RESERVED_EMAILS_FILE):
+        return 0
+    
+    max_retries = 20
+    retry_delay = 0.1
+    removed_count = 0
+    
+    with _email_generation_lock:
+        for attempt in range(max_retries):
+            lock_fd = None
+            lock_file_obj = None
+            lock_acquired = False
+            
+            try:
+                # Acquire lock
+                if HAS_FCNTL:
+                    lock_fd = os.open(EMAIL_GEN_LOCK_FILE, os.O_CREAT | os.O_WRONLY)
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_acquired = True
+                elif HAS_MSVCRT:
+                    lock_file_obj = open(EMAIL_GEN_LOCK_FILE, 'ab')
+                    lock_fd = lock_file_obj.fileno()
+                    msvcrt.locking(lock_fd, msvcrt.LK_NBLCK, 1)
+                    lock_acquired = True
+                
+                # Read and filter
+                current_time = time.time()
+                timeout_seconds = timeout_minutes * 60
+                
+                kept_entries = []
+                if os.path.exists(RESERVED_EMAILS_FILE):
+                    with open(RESERVED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line: continue
+                            
+                            if '|' in line:
+                                email_part, ts_part = line.split('|', 1)
+                                try:
+                                    ts = float(ts_part)
+                                    if current_time - ts < timeout_seconds:
+                                        kept_entries.append(line)
+                                    else:
+                                        removed_count += 1
+                                        print(f"[DEBUG] [imap.cleanup] Removing stale reservation: {email_part} (age: {int(current_time - ts)}s)")
+                                except (ValueError, TypeError):
+                                    # Corrupted line? Remove it
+                                    removed_count += 1
+                            else:
+                                # Old format without timestamp? Keep but it will be purged next time if it doesn't match
+                                kept_entries.append(f"{line}|{current_time}")
+                
+                if removed_count > 0:
+                    if _safe_write_lines(RESERVED_EMAILS_FILE, kept_entries):
+                        print(f"[IMAP] Cleanup: Removed {removed_count} stale reservations")
+                    else:
+                        print(f"[ERROR] [imap.cleanup] Failed to write back cleaned file")
+                
+                _release_email_lock(lock_fd, lock_file_obj)
+                return removed_count
+            except (IOError, OSError):
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+            finally:
+                if lock_acquired:
+                    _release_email_lock(lock_fd, lock_file_obj)
+    
+    return 0
 
 
 def _reserve_email(email: str) -> bool:
@@ -748,71 +818,37 @@ def _reserve_email(email: str) -> bool:
                 
                 # Read existing reserved emails
                 reserved_emails = set()
+                reserved_entries = [] # Full strings
                 if os.path.exists(RESERVED_EMAILS_FILE):
                     try:
                         with open(RESERVED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
                             for line in f:
                                 line = line.strip().lower()
-                                if line:
-                                    reserved_emails.add(line)
+                                if not line: continue
+                                reserved_entries.append(line)
+                                # Extract email part if timestamp exists
+                                email_only = line.split('|', 1)[0] if '|' in line else line
+                                reserved_emails.add(email_only)
                     except Exception as e:
                         print(f"[WARN] [imap._reserve_email] Failed to read reserved file: {e}")
                 
                 # Check if already reserved
                 if email_lower in reserved_emails:
                     print(f"[DEBUG] [imap._reserve_email] Email {email} already reserved")
-                    # Release lock
-                    if HAS_FCNTL and lock_fd:
-                        try:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                            os.close(lock_fd)
-                        except:
-                            pass
-                    elif HAS_MSVCRT and lock_file_obj:
-                        try:
-                            msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
-                            lock_file_obj.close()
-                        except:
-                            pass
-                    elif lock_fd:
-                        try:
-                            os.close(lock_fd)
-                            os.remove(EMAIL_GEN_LOCK_FILE)
-                        except:
-                            pass
+                    _release_email_lock(lock_fd, lock_file_obj)
                     return False
                 
-                # Add to reserved list
-                reserved_emails.add(email_lower)
+                # Add to reserved list with timestamp (use original entries + new one)
+                reserved_entries.append(f"{email_lower}|{time.time()}")
                 
-                # Write back
-                with open(RESERVED_EMAILS_FILE, 'w', encoding='utf-8', newline='\n') as f:
-                    for reserved_email in sorted(reserved_emails):
-                        f.write(f"{reserved_email}\n")
-                
-                print(f"[DEBUG] [imap._reserve_email] Reserved email: {email}")
-                
-                # Release lock
-                if HAS_FCNTL and lock_fd:
-                    try:
-                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                        os.close(lock_fd)
-                    except:
-                        pass
-                elif HAS_MSVCRT and lock_file_obj:
-                    try:
-                        msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
-                        lock_file_obj.close()
-                    except:
-                        pass
-                elif lock_fd:
-                    try:
-                        os.close(lock_fd)
-                        os.remove(EMAIL_GEN_LOCK_FILE)
-                    except:
-                        pass
-                
-                return True
+                # Write back ROBUSTLY
+                if _safe_write_lines(RESERVED_EMAILS_FILE, sorted(list(set(reserved_entries)))):
+                    print(f"[DEBUG] [imap._reserve_email] Reserved email: {email}")
+                    _release_email_lock(lock_fd, lock_file_obj)
+                    return True
+                else:
+                    _release_email_lock(lock_fd, lock_file_obj)
+                    return False
             except Exception as e:
                 # Release lock on error
                 if HAS_FCNTL and lock_fd:
@@ -860,20 +896,23 @@ def _reserve_email_atomic(email: str, lock_fd, lock_file_obj) -> bool:
     try:
         # Read existing reserved emails
         reserved_emails = set()
+        reserved_entries = []
         if os.path.exists(RESERVED_EMAILS_FILE):
             try:
                 with open(RESERVED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
                     for line in f:
                         line = line.strip().lower()
-                        if line:
-                            reserved_emails.add(line)
+                        if not line: continue
+                        reserved_entries.append(line)
+                        email_only = line.split('|', 1)[0] if '|' in line else line
+                        reserved_emails.add(email_only)
             except Exception as e:
                 print(f"[WARN] [imap._reserve_email_atomic] Failed to read reserved file: {e}")
                 return False
         
         # Check if already reserved or used
         if email_lower in reserved_emails:
-            print(f"[DEBUG] [imap._reserve_email_atomic] Email {email} already in reserved_emails.txt (current reserved: {sorted(reserved_emails)})")
+            print(f"[DEBUG] [imap._reserve_email_atomic] Email {email} already in reserved_emails.txt")
             return False
         
         # Also check if it's in used_emails.txt
@@ -881,18 +920,15 @@ def _reserve_email_atomic(email: str, lock_fd, lock_file_obj) -> bool:
             print(f"[DEBUG] [imap._reserve_email_atomic] Email {email} already in used_emails.txt")
             return False
         
-        # Add to reserved list
-        reserved_emails.add(email_lower)
+        # Add to reserved list with timestamp
+        reserved_entries.append(f"{email_lower}|{time.time()}")
         
-        # Write back (with flush to ensure it's written immediately)
-        with open(RESERVED_EMAILS_FILE, 'w', encoding='utf-8', newline='\n') as f:
-            for reserved_email in sorted(reserved_emails):
-                f.write(f"{reserved_email}\n")
-            f.flush()  # Force write to disk immediately
-            os.fsync(f.fileno())  # Ensure it's written to disk (Unix/Windows)
-        
-        print(f"[DEBUG] [imap._reserve_email_atomic] Successfully reserved email: {email} (total reserved now: {len(reserved_emails)})")
-        return True
+        # Write back ROBUSTLY
+        if _safe_write_lines(RESERVED_EMAILS_FILE, sorted(list(set(reserved_entries)))):
+            print(f"[DEBUG] [imap._reserve_email_atomic] Successfully reserved email: {email} (total reserved now: {len(reserved_entries)})")
+            return True
+        else:
+            return False
     except Exception as e:
         print(f"[ERROR] [imap._reserve_email_atomic] Failed to reserve email: {e}")
         return False
@@ -902,9 +938,28 @@ def _is_email_used_internal(email_lower: str) -> bool:
     """
     Internal function to check if email is used (without checking reserved_emails.txt).
     Used when we already have the lock and want to check only used_emails.txt.
+    Matches primarily based on sequence number.
     """
     user_id = os.environ.get("USER_ID")
     
+    # Extract number from candidate email
+    candidate_num = None
+    match = re.search(r'flipkart(\d+)@', email_lower)
+    if match:
+        candidate_num = int(match.group(1))
+
+    # Helper to check number match or string match
+    def is_match(line, target_email, target_num):
+        line = line.strip().lower()
+        if not line: return False
+        if line == target_email: return True
+        # Check number match
+        if target_num is not None:
+            m = re.search(r'flipkart(\d+)@', line)
+            if m and int(m.group(1)) == target_num:
+                return True
+        return False
+
     # Check per-user file
     if user_id:
         try:
@@ -912,7 +967,7 @@ def _is_email_used_internal(email_lower: str) -> bool:
             if per_user_path.exists():
                 with open(per_user_path, 'r', encoding='utf-8-sig', errors='replace') as f:
                     for line in f:
-                        if line.strip().lower() == email_lower:
+                        if is_match(line, email_lower, candidate_num):
                             return True
         except Exception as e:
             print(f"[WARN] [imap._is_email_used_internal] Error checking per-user file: {e}")
@@ -923,7 +978,7 @@ def _is_email_used_internal(email_lower: str) -> bool:
         if global_path.exists():
             with open(global_path, 'r', encoding='utf-8-sig', errors='replace') as f:
                 for line in f:
-                    if line.strip().lower() == email_lower:
+                    if is_match(line, email_lower, candidate_num):
                         return True
     except Exception as e:
         print(f"[WARN] [imap._is_email_used_internal] Error checking global file: {e}")
@@ -1042,113 +1097,59 @@ def _unreserve_email(email: str) -> None:
                     break
                 
                 if not os.path.exists(RESERVED_EMAILS_FILE):
-                    # Release lock
-                    if HAS_FCNTL and lock_fd:
-                        try:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                            os.close(lock_fd)
-                        except:
-                            pass
-                    elif HAS_MSVCRT and lock_file_obj:
-                        try:
-                            msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
-                            lock_file_obj.close()
-                        except:
-                            pass
-                    elif lock_fd:
-                        try:
-                            os.close(lock_fd)
-                            os.remove(EMAIL_GEN_LOCK_FILE)
-                        except:
-                            pass
+                    # Release lock and return
+                    _release_email_lock(lock_fd, lock_file_obj)
                     return
                 
-                # Read existing reserved emails
-                reserved_emails = set()
-                try:
-                    with open(RESERVED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
-                        for line in f:
-                            line = line.strip().lower()
-                            if line:
-                                reserved_emails.add(line)
-                except Exception as e:
-                    print(f"[WARN] [imap._unreserve_email] Failed to read reserved file: {e}")
-                    # Release lock
-                    if HAS_FCNTL and lock_fd:
-                        try:
-                            fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                            os.close(lock_fd)
-                        except:
-                            pass
-                    elif HAS_MSVCRT and lock_file_obj:
-                        try:
-                            msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
-                            lock_file_obj.close()
-                        except:
-                            pass
-                    elif lock_fd:
-                        try:
-                            os.close(lock_fd)
-                            os.remove(EMAIL_GEN_LOCK_FILE)
-                        except:
-                            pass
-                    return
+                # Read existing reserved emails with retry for file access
+                reserved_entries = []
+                read_success = False
+                for read_attempt in range(5):
+                    try:
+                        with open(RESERVED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line:
+                                    reserved_entries.append(line)
+                        read_success = True
+                        break
+                    except (IOError, OSError) as e:
+                        print(f"[DEBUG] [imap._unreserve_email] Read attempt {read_attempt+1} failed: {e}")
+                        time.sleep(0.05)
                 
-                # Remove if present
-                if email_lower in reserved_emails:
-                    reserved_emails.remove(email_lower)
+                if not read_success:
+                    print(f"[WARN] [imap._unreserve_email] Could not read {RESERVED_EMAILS_FILE} after retries")
+                    _release_email_lock(lock_fd, lock_file_obj)
+                    return
+
+                # Remove matching entries (email part)
+                original_count = len(reserved_entries)
+                # entry is "email|timestamp"
+                new_entries = []
+                for entry in reserved_entries:
+                    if '|' in entry:
+                        e_part = entry.split('|', 1)[0].strip().lower()
+                    else:
+                        e_part = entry.strip().lower()
                     
-                    # Write back
-                    with open(RESERVED_EMAILS_FILE, 'w', encoding='utf-8', newline='\n') as f:
-                        for reserved_email in sorted(reserved_emails):
-                            f.write(f"{reserved_email}\n")
-                    
-                    print(f"[DEBUG] [imap._unreserve_email] Unreserved email: {email}")
+                    if e_part != email_lower:
+                        new_entries.append(entry)
+                
+                if len(new_entries) < original_count:
+                    # Write back ROBUSTLY
+                    if _safe_write_lines(RESERVED_EMAILS_FILE, sorted(list(set(new_entries)))):
+                         print(f"[DEBUG] [imap._unreserve_email] Successfully unreserved {email}")
+                    else:
+                        print(f"[WARN] [imap._unreserve_email] Failed to write back {RESERVED_EMAILS_FILE}")
+                else:
+                    print(f"[DEBUG] [imap._unreserve_email] Email {email} was not in reserved list")
                 
                 # Release lock
-                if HAS_FCNTL and lock_fd:
-                    try:
-                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                        os.close(lock_fd)
-                    except:
-                        pass
-                elif HAS_MSVCRT and lock_file_obj:
-                    try:
-                        msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
-                        lock_file_obj.close()
-                    except:
-                        pass
-                elif lock_fd:
-                    try:
-                        os.close(lock_fd)
-                        os.remove(EMAIL_GEN_LOCK_FILE)
-                    except:
-                        pass
-                
+                _release_email_lock(lock_fd, lock_file_obj)
                 return
             except Exception as e:
                 # Release lock on error
-                if HAS_FCNTL and lock_fd:
-                    try:
-                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                        os.close(lock_fd)
-                    except:
-                        pass
-                elif HAS_MSVCRT and lock_file_obj:
-                    try:
-                        msvcrt.locking(lock_fd, msvcrt.LK_UNLCK, 1)
-                        lock_file_obj.close()
-                    except:
-                        pass
-                elif lock_fd:
-                    try:
-                        os.close(lock_fd)
-                        try:
-                            os.remove(EMAIL_GEN_LOCK_FILE)
-                        except:
-                            pass
-                    except:
-                        pass
+                _release_email_lock(lock_fd, lock_file_obj)
                 
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
@@ -1198,7 +1199,16 @@ def _find_all_missing_sequence_numbers(domain: str) -> list[int]:
     user_id = os.environ.get("USER_ID")
     used_numbers = set()
     
-    # Read per-user file first
+    # helper to extract number
+    def extract_number(line):
+        # Extract number from patterns like "flipkart1@domain.com" or "admin+flipkart1@domain.com"
+        # Match flipkart followed by digits
+        match = re.search(r'flipkart(\d+)@', line.lower())
+        if match:
+            return int(match.group(1))
+        return None
+
+    # 1. Check per-user file
     if user_id:
         try:
             per_user_path = REPORTS_DIR / f"used_emails_user{user_id}.txt"
@@ -1206,30 +1216,23 @@ def _find_all_missing_sequence_numbers(domain: str) -> list[int]:
                 with open(per_user_path, 'r', encoding='utf-8-sig', errors='replace') as f:
                     for line in f:
                         line = line.strip()
-                        if not line:
-                            continue
-                        # Extract number from patterns like "flipkart1@domain.com" or "admin+flipkart1@domain.com"
-                        # Match flipkart followed by digits
-                        match = re.search(r'flipkart(\d+)@', line.lower())
-                        if match:
-                            num = int(match.group(1))
+                        if not line: continue
+                        num = extract_number(line)
+                        if num is not None:
                             used_numbers.add(num)
         except Exception as e:
             print(f"[WARN] [imap._find_all_missing_sequence_numbers] Error reading per-user file: {e}")
     
-    # Read global file
+    # 2. Check global file (ALWAYS check this too, to ensure global uniqueness/sequence refilling)
     try:
         global_path = REPORTS_DIR / "used_emails.txt"
         if global_path.exists():
             with open(global_path, 'r', encoding='utf-8-sig', errors='replace') as f:
                 for line in f:
                     line = line.strip()
-                    if not line:
-                        continue
-                    # Extract number from patterns like "flipkart1@domain.com" or "admin+flipkart1@domain.com"
-                    match = re.search(r'flipkart(\d+)@', line.lower())
-                    if match:
-                        num = int(match.group(1))
+                    if not line: continue
+                    num = extract_number(line)
+                    if num is not None:
                         used_numbers.add(num)
     except Exception as e:
         print(f"[WARN] [imap._find_all_missing_sequence_numbers] Error reading global file: {e}")
@@ -1359,12 +1362,10 @@ def generate_flipkart_email() -> str:
             # Now we have the lock - generate email atomically
             print(f"[DEBUG] [imap.generate_flipkart_email] LOCK ACQUIRED - generating email atomically (attempt {attempt + 1}/{max_retries}, lock_fd={lock_fd}, lock_file_obj={lock_file_obj})")
             try:
-                # PRIORITY 1: First, check for missing sequence numbers in used_emails.txt
-                # This is the highest priority - fill gaps in the sequence before reusing failed emails
                 cfg = {}
                 user_id = os.environ.get("USER_ID")
                 
-                # Try to load from Supabase first (per-user config)
+                # Priority: Try to load from Supabase first
                 if user_id:
                     try:
                         import neon_client as supabase_client
@@ -1377,148 +1378,79 @@ def generate_flipkart_email() -> str:
                                     if "@" in base_email:
                                         domain = base_email.split("@", 1)[1]
                                         if domain and domain.strip():
-                                            # FIRST: Check for missing sequence numbers in used_emails.txt
-                                            # Try ALL missing sequences until we find one that's available
+                                            # PRIORITY 1: Check failed/remaining emails in use_first_mails.txt first
+                                            failed_email = get_and_remove_failed_email()
+                                            if failed_email:
+                                                if _reserve_email_atomic(failed_email, lock_fd, lock_file_obj):
+                                                    safe_print(f"[IMAP] [OK] PRIORITY 1: REUSING remaining mail from use_first_mails.txt: {failed_email}")
+                                                    _release_email_lock(lock_fd, lock_file_obj)
+                                                    return failed_email
+                                            
+                                            # PRIORITY 2: Check for missing sequence numbers in used_emails.txt
                                             missing_numbers = _find_all_missing_sequence_numbers(domain)
                                             if missing_numbers:
                                                 for missing_num in missing_numbers:
                                                     missing_email = f"flipkart{missing_num}@{domain}"
-                                                    # Check and reserve atomically (we already have the lock)
                                                     if _reserve_email_atomic(missing_email, lock_fd, lock_file_obj):
-                                                        print(f"[DEBUG] [imap.generate_flipkart_email] Using missing sequence number: flipkart{missing_num}@{domain}")
-                                                        # Release lock before returning
+                                                        print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 2: Using missing sequence number: {missing_email}")
+                                                        mark_email_success(missing_email)
                                                         _release_email_lock(lock_fd, lock_file_obj)
                                                         return missing_email
-                                                    else:
-                                                        print(f"[DEBUG] [imap.generate_flipkart_email] Missing sequence {missing_num} is already reserved, trying next missing sequence...")
-                                                # All missing sequences are reserved, will check failed emails next
-                                                print(f"[DEBUG] [imap.generate_flipkart_email] All {len(missing_numbers)} missing sequences are already reserved, will check failed emails next")
                                             
-                                            # PRIORITY 2: Check failed emails if no missing sequences available
-                                            failed_email = get_and_remove_failed_email()
-                                            if failed_email:
-                                                if _reserve_email_atomic(failed_email, lock_fd, lock_file_obj):
-                                                    safe_print(f"[IMAP] [OK] PRIORITY 2: REUSING failed email from use_first_mails.txt: {failed_email}")
-                                                    _release_email_lock(lock_fd, lock_file_obj)
-                                                    return failed_email
-                                            
-                                            # PRIORITY 3: Generate email using counter if no missing sequences and no failed emails
-                                            print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 3: Using counter to generate new email")
-                                            max_attempts = 100  # Prevent infinite loop
-                                            for email_attempt in range(max_attempts):
+                                            # PRIORITY 3: Generate email using counter
+                                            print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 3: Using counter")
+                                            for _ in range(100):
                                                 counter = _get_next_counter()
                                                 generated_email = f"flipkart{counter}@{domain}"
-                                                
-                                                # Reserve atomically (we already have the lock)
                                                 if _reserve_email_atomic(generated_email, lock_fd, lock_file_obj):
-                                                    print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 3: Generated and reserved unused email: {generated_email}")
-                                                    # Release lock before returning
+                                                    print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 3: Generated {generated_email}")
+                                                    mark_email_success(generated_email)
                                                     _release_email_lock(lock_fd, lock_file_obj)
                                                     return generated_email
-                                                else:
-                                                    print(f"[DEBUG] [imap.generate_flipkart_email] Email {generated_email} already in used_emails.txt or reserved by another worker, trying next number...")
-                                                    continue
-                                            
-                                            # If we exhausted all attempts, return the last generated email anyway
-                                            print(f"[ERROR] [imap.generate_flipkart_email] Exhausted {max_attempts} attempts, using: {generated_email}")
-                                            # Try to reserve it anyway
-                                            _reserve_email_atomic(generated_email, lock_fd, lock_file_obj)
-                                            _release_email_lock(lock_fd, lock_file_obj)
-                                            return generated_email
                             except Exception as e:
                                 print(f"[DEBUG] [imap.generate_flipkart_email] Supabase load failed: {e}")
                     except ImportError:
-                        pass  # supabase_client not available
+                        pass
                 
-                # Fallback to JSON file
+                # Fallback to local JSON config
                 if not cfg or not cfg.get("email"):
                     cfg = load_imap_config()
                 
                 base_email = cfg.get("email", "")
-                if "@" not in base_email:
-                    raise ValueError("Configured email is invalid or missing '@'")
-                
-                domain = base_email.split("@", 1)[1]
-                if not domain or not domain.strip():
-                    raise ValueError("Configured email domain is invalid or empty")
-                
-                # PRIORITY 1: Check for missing sequence numbers in used_emails.txt
-                # Try ALL missing sequences until we find one that's available
-                missing_numbers = _find_all_missing_sequence_numbers(domain)
-                if missing_numbers:
-                    for missing_num in missing_numbers:
-                        missing_email = f"flipkart{missing_num}@{domain}"
-                        # Reserve atomically (we already have the lock)
-                        if _reserve_email_atomic(missing_email, lock_fd, lock_file_obj):
-                            print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 1: Using missing sequence number: flipkart{missing_num}@{domain}")
-                            # Release lock before returning
-                            _release_email_lock(lock_fd, lock_file_obj)
-                            return missing_email
-                        else:
-                            print(f"[DEBUG] [imap.generate_flipkart_email] Missing sequence {missing_num} is already reserved, trying next missing sequence...")
-                    # All missing sequences are reserved, will check failed emails next
-                    print(f"[DEBUG] [imap.generate_flipkart_email] All {len(missing_numbers)} missing sequences are already reserved, will check failed emails next")
-                
-                # PRIORITY 2: Check if there are any failed emails to reuse from use_first_mails.txt
-                # Only use failed emails if no missing sequences are available
-                print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 2: Checking use_first_mails.txt for failed emails...")
-                print(f"[DEBUG] [imap.generate_flipkart_email] File path: {FAILED_EMAILS_FILE}")
-                print(f"[DEBUG] [imap.generate_flipkart_email] File exists: {os.path.exists(FAILED_EMAILS_FILE)}")
-                
-                if os.path.exists(FAILED_EMAILS_FILE):
-                    try:
-                        # Check file size
-                        file_size = os.path.getsize(FAILED_EMAILS_FILE)
-                        print(f"[DEBUG] [imap.generate_flipkart_email] File size: {file_size} bytes")
-                        if file_size > 0:
-                            # Try to peek at file content (first 200 chars) for debugging
-                            with open(FAILED_EMAILS_FILE, 'r', encoding='utf-8-sig', errors='replace') as f:
-                                peek = f.read(200)
-                                print(f"[DEBUG] [imap.generate_flipkart_email] File preview: {repr(peek)}")
-                    except Exception as e:
-                        print(f"[WARN] [imap.generate_flipkart_email] Could not preview file: {e}")
-                
-                failed_email = get_and_remove_failed_email()
-                if failed_email:
-                    # Reserve the failed email immediately
-                    if _reserve_email_atomic(failed_email, lock_fd, lock_file_obj):
-                        safe_print(f"[IMAP] [OK] PRIORITY 2: REUSING failed email from use_first_mails.txt: {failed_email}")
-                        # Release lock AFTER reserving (lock must be held during reservation)
-                        _release_email_lock(lock_fd, lock_file_obj)
-                        lock_acquired = False  # Mark as released
-                        return failed_email
-                    else:
-                        print(f"[WARN] [imap.generate_flipkart_email] Failed to reserve failed email {failed_email}, will use counter instead")
-                else:
-                    print(f"[DEBUG] [imap.generate_flipkart_email] No failed emails found in use_first_mails.txt, will use counter")
-                
-                # PRIORITY 3: If no missing sequences and no failed emails, generate email using counter
-                # Keep trying until we find an unused email
-                print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 3: Using counter to generate new email")
-                max_attempts = 100  # Prevent infinite loop
-                for email_attempt in range(max_attempts):
-                    counter = _get_next_counter()
-                    # Remove "admin+" prefix, just use flipkart{counter}
-                    generated_email = f"flipkart{counter}@{domain}"
-                    
-                    print(f"[DEBUG] [imap.generate_flipkart_email] Generated email from counter: {generated_email}, attempting to reserve (we have lock)")
-                    # Reserve atomically (we already have the lock)
-                    if _reserve_email_atomic(generated_email, lock_fd, lock_file_obj):
-                        print(f"[DEBUG] [imap.generate_flipkart_email] PRIORITY 3: Successfully reserved email from counter: {generated_email}, releasing lock")
-                        # Release lock AFTER reserving (lock must be held during reservation)
-                        _release_email_lock(lock_fd, lock_file_obj)
-                        lock_acquired = False  # Mark as released
-                        return generated_email
-                    else:
-                        print(f"[DEBUG] [imap.generate_flipkart_email] Email {generated_email} already in used_emails.txt or reserved by another worker, trying next number...")
-                        continue
-                
-                # If we exhausted all attempts, return the last generated email anyway (shouldn't happen)
-                print(f"[ERROR] [imap.generate_flipkart_email] Exhausted {max_attempts} attempts to find unused email, using: {generated_email}")
-                # Try to reserve it anyway
-                _reserve_email_atomic(generated_email, lock_fd, lock_file_obj)
+                if "@" in base_email:
+                    domain = base_email.split("@", 1)[1]
+                    if domain and domain.strip():
+                        # PRIORITY 1: Remaining/Failed pool
+                        failed_email = get_and_remove_failed_email()
+                        if failed_email:
+                            if _reserve_email_atomic(failed_email, lock_fd, lock_file_obj):
+                                safe_print(f"[IMAP] [OK] PRIORITY 1: REUSING {failed_email}")
+                                _release_email_lock(lock_fd, lock_file_obj)
+                                return failed_email
+                        
+                        # PRIORITY 2: Gaps
+                        missing_numbers = _find_all_missing_sequence_numbers(domain)
+                        if missing_numbers:
+                            for missing_num in missing_numbers:
+                                missing_email = f"flipkart{missing_num}@{domain}"
+                                if _reserve_email_atomic(missing_email, lock_fd, lock_file_obj):
+                                    mark_email_success(missing_email)
+                                    _release_email_lock(lock_fd, lock_file_obj)
+                                    return missing_email
+                        
+                        # PRIORITY 3: Counter
+                        for _ in range(100):
+                            counter = _get_next_counter()
+                            generated_email = f"flipkart{counter}@{domain}"
+                            if _reserve_email_atomic(generated_email, lock_fd, lock_file_obj):
+                                mark_email_success(generated_email)
+                                _release_email_lock(lock_fd, lock_file_obj)
+                                return generated_email
+
+                # If no email could be generated through any method
                 _release_email_lock(lock_fd, lock_file_obj)
-                return generated_email
+                raise Exception("Failed to generate unique email after checking all priorities and fallback methods")
+                
             except Exception as e:
                 # Release lock on error
                 if lock_acquired:

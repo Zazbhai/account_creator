@@ -15,6 +15,7 @@ import json
 import caller
 import neon_client as supabase_client
 import payment
+import imap
 
 # Load environment variables from .env file if it exists
 try:
@@ -213,76 +214,66 @@ def get_user_margin_balance(user_id: int) -> float:
     return get_wallet_balance_for_user(user_id)
 
 
-def update_margin_balance(user_id: int, amount: float, reason: str = "") -> bool:
+def update_margin_balance(user_id: int, amount: float, reason: str = "", fallback_balance: float = None) -> bool:
     """
     Update margin_balance for a user by adding/subtracting the given amount.
     Positive amount adds to balance, negative amount subtracts from balance.
     Returns True if successful, False otherwise.
-    Includes verification to ensure the update was successful.
+    Uses atomic database updates to prevent race conditions.
     """
     try:
-        # Get current margin_balance and per_account_fee
-        current_margin_balance = get_user_margin_balance(user_id)
-        current_fee = get_margin_per_account(user_id)
-        
         # Validate amount is a number
         try:
             amount = float(amount)
         except (TypeError, ValueError):
             print(f"[ERROR] [update_margin_balance] Invalid amount: {amount}")
             return False
-        
-        # Calculate new balance
-        new_margin_balance = current_margin_balance + amount
-        
-        # Log the operation
+            
         operation = "ADDED" if amount >= 0 else "DEDUCTED"
         print(f"[DEBUG] [update_margin_balance] ========== MARGIN BALANCE UPDATE ==========")
         print(f"[DEBUG] [update_margin_balance] User ID: {user_id}")
-        print(f"[DEBUG] [update_margin_balance] Current balance: ₹{current_margin_balance:.2f}")
         print(f"[DEBUG] [update_margin_balance] Amount: ₹{abs(amount):.2f} ({operation})")
-        print(f"[DEBUG] [update_margin_balance] New balance: ₹{new_margin_balance:.2f}")
         print(f"[DEBUG] [update_margin_balance] Reason: {reason}")
         
-        # Update in Supabase
+        # Determine fallback balance (wallet balance) in case margin row doesn't exist yet
+        # If fallback_balance is provided, use it (useful for deposits where wallet is already updated)
+        if fallback_balance is not None:
+            fallback_bal = fallback_balance
+        else:
+            fallback_bal = get_wallet_balance_for_user(user_id)
+            
+        current_fee = get_margin_per_account(user_id)
+        
+        # Perform atomic update via Neon client
         if supabase_client.is_enabled():
             try:
-                supabase_client.upsert_margin_fee_for_user(
+                new_balance = supabase_client.atomic_margin_update(
                     user_id=user_id,
-                    per_account_fee=current_fee,
-                    margin_balance=new_margin_balance,
+                    amount_delta=amount,
+                    fallback_start_balance=fallback_bal,
+                    default_per_account_fee=current_fee
                 )
                 
-                # Verify the update was successful
-                try:
-                    verified_balance = get_user_margin_balance(user_id)
-                    if abs(verified_balance - new_margin_balance) > 0.01:  # Allow small floating point differences
-                        print(f"[ERROR] [update_margin_balance] Verification failed! Expected ₹{new_margin_balance:.2f}, got ₹{verified_balance:.2f}")
-                        return False
-                    else:
-                        print(f"[DEBUG] [update_margin_balance] Verification successful: ₹{verified_balance:.2f} ✓")
-                except Exception as e:
-                    print(f"[WARN] [update_margin_balance] Could not verify balance update: {e}")
-                    # Don't fail if verification fails, the update might have succeeded
-                
-                print(f"[DEBUG] [update_margin_balance] Successfully updated margin_balance for user {user_id}: ₹{new_margin_balance:.2f}")
-                print(f"[DEBUG] [update_margin_balance] ============================================")
-                return True
+                if new_balance is not None:
+                    print(f"[DEBUG] [update_margin_balance] Successfully updated margin_balance. New balance: ₹{new_balance:.2f}")
+                    print(f"[DEBUG] [update_margin_balance] ============================================")
+                    return True
+                else:
+                    print(f"[ERROR] [update_margin_balance] Atomic update returned None")
+                    return False
             except Exception as e:
-                print(f"[ERROR] [update_margin_balance] Failed to update margin_balance in Supabase for user {user_id}: {e}")
+                print(f"[ERROR] [update_margin_balance] Failed to update margin_balance in DB: {e}")
                 import traceback
                 traceback.print_exc()
-                print(f"[DEBUG] [update_margin_balance] ============================================")
                 return False
         else:
-            print(f"[WARN] [update_margin_balance] Supabase not enabled, cannot update margin_balance")
-            print(f"[DEBUG] [update_margin_balance] ============================================")
+            print(f"[WARN] [update_margin_balance] Database not enabled, cannot update margin_balance")
             return False
+
     except Exception as e:
-        print(f"[ERROR] [update_margin_balance] Exception updating margin_balance for user {user_id}: {e}")
+        print(f"[ERROR] [update_margin_balance] Exception: {e}")
         import traceback
         traceback.print_exc()
-        print(f"[DEBUG] [update_margin_balance] ============================================")
         return False
 
 
@@ -563,18 +554,19 @@ def compute_balance_and_capacity(user_id, include_price=False):
         caller.COUNTRY = api_settings.get("country", caller.COUNTRY)
 
         print(f"[DEBUG] [compute_balance_and_capacity] Calling get_balance()...")
+        balance = None
         try:
             balance_text = caller.get_balance()
             print(f"[DEBUG] [compute_balance_and_capacity] get_balance() returned: {balance_text[:100] if balance_text else 'None'}")
+            balance = caller.parse_balance(balance_text)
+            if balance is None:
+                print(f"[WARN] [compute_balance_and_capacity] Failed to parse balance from: {balance_text}")
         except Exception as e:
             print(f"[ERROR] [compute_balance_and_capacity] Exception in get_balance(): {e}")
             import traceback
             traceback.print_exc()
-            return None, None, None if include_price else None, f"Failed to get balance: {str(e)}"
-        
-        balance = caller.parse_balance(balance_text)
-        if balance is None:
-            return None, None, None if include_price else None, "Failed to parse balance"
+            # Don't return error yet, try to get price so we can at least show that
+            balance = None
         
         print(f"[DEBUG] [compute_balance_and_capacity] Calling get_price_for_service()...")
         try:
@@ -595,35 +587,53 @@ def compute_balance_and_capacity(user_id, include_price=False):
                 price = float(api_settings.get('default_price', 6.99))
 
         # Capacity is based on the real provider price.
-        capacity = int(balance / price) if price > 0 else 0
+        # If balance is None (API failure), treat as 0 for capacity calc
+        safe_balance = balance if balance is not None else 0.0
+        capacity = int(safe_balance / price) if price > 0 else 0
 
         # Best-effort: store last known balance/capacity/price in Supabase users table.
         if supabase_client.is_enabled():
             try:
-                supabase_client.update_user_balance(user_id, balance, capacity, price)
+                supabase_client.update_user_balance(user_id, safe_balance, capacity, price)
             except Exception as e:
                 print(f"[WARN] Supabase update_user_balance failed: {e}")
 
         if include_price:
+            # Return discovered price even if balance is None (so UI shows price instead of N/A)
             return balance, capacity, price, None
         return balance, capacity, None
     except Exception as e:
+        # If we have a critical error but can still determine the default price, return that
+        try:
+             api_settings = load_api_settings()
+             default_price = float(api_settings.get('default_price', 6.99))
+             if include_price:
+                 return None, 0, default_price, str(e)
+        except:
+            pass
         return None, None, None if include_price else None, str(e)
 
 # API Routes
 @app.route('/api/auth/check', methods=['GET'])
 def check_auth():
     if 'user_id' not in session:
-        return jsonify({"authenticated": False})
-    user = get_user_by_username(session.get('username'))
-    return jsonify({
-        "authenticated": True,
-        "user": {
-            "id": user.get('id'),
-            "username": user.get('username'),
-            "role": user.get('role')
-        }
-    })
+        response = jsonify({"authenticated": False})
+    else:
+        user = get_user_by_username(session.get('username'))
+        response = jsonify({
+            "authenticated": True,
+            "user": {
+                "id": user.get('id'),
+                "username": user.get('username'),
+                "role": user.get('role')
+            }
+        })
+    
+    # Prevent caching of auth status
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
@@ -650,7 +660,12 @@ def login():
 @login_required
 def logout():
     session.clear()
-    return jsonify({"success": True})
+    response = jsonify({"success": True})
+    # Explicitly clear the session cookie
+    response.set_cookie('session', '', expires=0, secure=False, httponly=True)
+    # Nuke everything: cookies, storage, cache
+    response.headers["Clear-Site-Data"] = '"cookies", "storage", "executionContexts"'
+    return response
 
 @app.route('/api/balance', methods=['GET'])
 @login_required
@@ -1006,6 +1021,15 @@ def api_worker_status():
 def run():
     print(f"[DEBUG] [run] Starting /api/run endpoint")
     user_id = session.get('user_id')
+    if not user_id:
+        return jsonify({"error": "Login required"}), 401
+    
+    # Standardize user_id as int immediately to prevent key mismatches in tracking
+    try:
+        user_id = int(user_id)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid User ID in session"}), 400
+        
     print(f"[DEBUG] [run] User ID: {user_id}")
     
     total_accounts = int(request.form.get("total_accounts", 10))
@@ -1158,23 +1182,24 @@ def run():
     # Initialize account status tracking for this batch
     print(f"[DEBUG] [run] Initializing account status tracking...")
     with account_status_lock:
-        if user_id not in user_account_status:
-            user_account_status[user_id] = {
-                "success": 0, 
-                "failed": 0, 
-                "total_requested": 0,
-                "reported_emails": set()  # Track reported emails to prevent double-counting
-            }
-        # Ensure reported_emails exists (for existing entries)
-        if "reported_emails" not in user_account_status[user_id]:
-            user_account_status[user_id]["reported_emails"] = set()
+        # Initialize or reset tracking for this user
+        user_account_status[user_id] = {
+            "success": 0, 
+            "failed": 0, 
+            "total_requested": total_accounts,
+            "margin_per_account": margin_per_account, # Pin the fee for consistent refunds
+            "reported_emails": set(),
+            "active_emails": set()
+        }
         user_account_status[user_id]["total_requested"] = total_accounts
         print(f"[DEBUG] [run] Initialized account tracking: total_requested={total_accounts}")
     
-    print(f"[DEBUG] [run] Starting worker thread...")
+    print(f"[DEBUG] [run] Starting worker thread for user {user_id}...")
+    user_id_int = user_id # Already converted to int at start of function
+        
     thread = threading.Thread(
         target=run_parallel_sessions,
-        args=(total_accounts, max_parallel, user_id, use_used_account, retry_failed, margin_per_account),
+        args=(total_accounts, max_parallel, user_id_int, use_used_account, retry_failed, margin_per_account),
         daemon=True
     )
     thread.start()
@@ -1200,20 +1225,39 @@ def api_account_status():
         status = data.get('status')  # 'success' or 'failed'
         email = data.get('email')  # Optional: email to prevent double-counting
         
-        if not user_id or status not in ('success', 'failed'):
-            return jsonify({"error": "Invalid request. user_id and status (success/failed) required"}), 400
+        if not user_id or status not in ('success', 'failed', 'started'):
+            return jsonify({"error": "Invalid request. user_id and status (success/failed/started) required"}), 400
         
         user_id = int(user_id)
-        margin_per_account = get_margin_per_account(user_id)
         
         with account_status_lock:
+            # Get current run status OR initialize if worker reports before run thread (rare)
             if user_id not in user_account_status:
+                margin_per_account = get_margin_per_account(user_id)
                 user_account_status[user_id] = {
                     "success": 0, 
                     "failed": 0, 
                     "total_requested": 0,
-                    "reported_emails": set()  # Track reported emails to prevent double-counting
+                    "margin_per_account": margin_per_account,
+                    "reported_emails": set(),
+                    "active_emails": set()
                 }
+            else:
+                # Use the fee that was pinned when the run started
+                margin_per_account = user_account_status[user_id].get("margin_per_account")
+                if margin_per_account is None:
+                    margin_per_account = get_margin_per_account(user_id)
+                    user_account_status[user_id]["margin_per_account"] = margin_per_account
+            
+            if status == 'started':
+                if email:
+                    user_account_status[user_id].setdefault("active_emails", set()).add(email)
+                    print(f"[DEBUG] [api_account_status] User {user_id}: Email {email} started")
+                return jsonify({"success": True})
+
+            # For success/fail, remove from active_emails if present
+            if email:
+                user_account_status[user_id].setdefault("active_emails", set()).discard(email)
             
             # Check if this email was already reported (prevent double-counting)
             email_key = email or f"account_{user_account_status[user_id]['success'] + user_account_status[user_id]['failed']}"
@@ -1338,36 +1382,22 @@ def api_add_funds():
     if paid_amount <= 0:
         return jsonify({"error": "Verified payment amount is zero or invalid"}), 400
 
+    # Get current wallet balance BEFORE adding funds, to use as margin fallback start
+    # if margin row is missing. This prevents double-counting the initial deposit.
+    pre_update_wallet_balance = get_wallet_balance_for_user(user_id)
+
     # Credit exactly the paid amount, regardless of the requested_amount
     new_balance = add_funds_to_user(user_id, paid_amount)
 
     # Update margin_balance in margin_fees table by adding the paid amount to existing balance
+    # Use atomic update helper
     if supabase_client.is_enabled():
-        try:
-            # Get current margin_balance and per_account_fee to preserve them
-            current_fee = get_margin_per_account(user_id)
-
-            # Get current margin_balance from margin_fees table (not wallet_balance)
-            current_margin_balance = 0.0
-            try:
-                row = supabase_client.get_margin_fee_by_user(user_id)
-                if row and row.get("margin_balance") is not None:
-                    current_margin_balance = float(row["margin_balance"])
-            except Exception:
-                # If row doesn't exist, start with 0.0
-                current_margin_balance = 0.0
-
-            # Add the paid amount to existing margin_balance
-            new_margin_balance = current_margin_balance + paid_amount
-
-            # Upsert will create the row if it doesn't exist, or update if it does
-            supabase_client.upsert_margin_fee_for_user(
-                user_id=user_id,
-                per_account_fee=current_fee,
-                margin_balance=new_margin_balance,
-            )
-        except Exception as e:
-            print(f"[WARN] Failed to update margin_fees for user {user_id}: {e}")
+        update_margin_balance(
+            user_id, 
+            paid_amount, 
+            f"Payment verified via UTR {utr}",
+            fallback_balance=pre_update_wallet_balance
+        )
 
     # Record this UTR as used so it cannot be applied again
     try:
@@ -1384,6 +1414,8 @@ def api_add_funds():
             "wallet_balance": round(new_balance, 2),
         }
     )
+
+
 
 @app.route('/api/stop', methods=['POST'])
 def api_stop():
@@ -1432,6 +1464,30 @@ def api_stop():
         print(f"  Failed (reported): {failed_count}")
         print(f"  Completed (reported): {completed_count}")
         print(f"  Remaining (not yet reported): {remaining_count}")
+        print(f"[DEBUG] [api_stop] Cleaning up active emails from reserved list...")
+        
+        # PROACTIVE CLEANUP: Unreserve AND RECYCLE active emails immediately before killing processes
+        # This ensures that even if process termination is abrupt, the reservation is cleared
+        # and the email is added back to the pool for reuse.
+        active_emails_val = status.get("active_emails", set())
+        # Handle both set and list types safely
+        active_emails_list = list(active_emails_val) if active_emails_val else []
+        
+        if active_emails_list:
+            print(f"[DEBUG] [api_stop] Found {len(active_emails_list)} active emails to unreserve and recycle: {active_emails_list}")
+            for orphaned_email in active_emails_list:
+                try:
+                    # 1. Add back to recycle pool (use_first_mails.txt)
+                    imap.add_failed_email(orphaned_email)
+                    # 2. Remove from reserved list (reserved_emails.txt)
+                    imap.unreserve_email(orphaned_email)
+                    print(f"[DEBUG] [api_stop] Proactive recycle successful for: {orphaned_email}")
+                except Exception as clean_err:
+                    print(f"[ERROR] [api_stop] Failed to proactively recycle {orphaned_email}: {clean_err}")
+        
+        # Clear the active list now that we've recycled them
+        status["active_emails"] = set()
+        
         print(f"[DEBUG] [api_stop] Workers will report their own status. Final refund will be calculated when all workers complete.")
     
     # Kill all processes
@@ -1868,10 +1924,9 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account, 
         env['API_COUNTRY'] = str(api_settings.get("country", caller.COUNTRY))
         env['WAIT_FOR_OTP'] = str(api_settings.get("wait_for_otp", 5))  # In minutes (for first OTP)
         env['WAIT_FOR_SECOND_OTP'] = str(api_settings.get("wait_for_second_otp", 5))  # In minutes (for second/phone OTP)
-        # Pass backend URL so workers can signal backend to stop all workers on timeout
-        backend_host = os.environ.get("BACKEND_HOST", "0.0.0.0")
-        backend_port = os.environ.get("BACKEND_PORT", "6333")
-        env['BACKEND_URL'] = f"http://{backend_host}:{backend_port}" if backend_host != "0.0.0.0" else f"http://localhost:{backend_port}"
+        # Pass backend URL so workers can signal backend to stop all workers on timeout or report status
+        backend_port = os.environ.get("PORT", "6333")
+        env['BACKEND_URL'] = f"http://localhost:{backend_port}"
         
         # #region agent log
         try:
@@ -1980,6 +2035,14 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account, 
 
 def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_account, retry_failed=True, margin_per_account=None):
     """Run sessions in batches."""
+    print(f"[DEBUG] [run_parallel_sessions] Starting run for user {user_id}. Cleaning up stale email reservations...")
+    try:
+        cleaned = imap.cleanup_stale_reservations(timeout_minutes=10)
+        if cleaned > 0:
+            print(f"[DEBUG] [run_parallel_sessions] Cleaned up {cleaned} stale email reservation(s)")
+    except Exception as e:
+        print(f"[WARN] [run_parallel_sessions] Failed to clean stale reservations: {e}")
+        
     LOG_DIR = Path("logs")
     LOG_DIR.mkdir(exist_ok=True)
     clear_user_logs(user_id)
@@ -2097,11 +2160,15 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
         
         # Get final account status summary and emit to frontend
         # Wait a moment for any pending status reports from workers
-        # Increased wait time to ensure all workers have time to report
-        time.sleep(3)  # Increased from 2s to 3s to give workers more time to report
+        time.sleep(3)
         
         with account_status_lock:
-            status = user_account_status.get(user_id, {"success": 0, "failed": 0, "total_requested": 0})
+            if user_id not in user_account_status:
+                user_account_status[user_id] = {
+                    "success": 0, "failed": 0, "total_requested": total_accounts,
+                    "active_emails": set(), "reported_emails": set()
+                }
+            status = user_account_status[user_id]
             success_count = status.get("success", 0)
             failed_count = status.get("failed", 0)
             total_requested = status.get("total_requested", 0)
@@ -2138,6 +2205,22 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                 else:
                     print(f"[ERROR] [run_parallel_sessions] Failed to refund for {remaining_count} unaccounted accounts")
             
+            # --- CRITICAL CLEANUP: Unreserve and Recycle Active Emails that didn't finish ---
+            active_emails = user_account_status[user_id].get("active_emails", set())
+            if active_emails:
+                print(f"[DEBUG] [run_parallel_sessions] Cleaning up {len(active_emails)} orphaned active emails: {active_emails}")
+                for orphaned_email in list(active_emails):
+                    try:
+                        # 1. Add back to recycle pool so it's prioritized next time
+                        imap.add_failed_email(orphaned_email)
+                        # 2. Remove from reserved list so other workers can see it
+                        imap.unreserve_email(orphaned_email)
+                        print(f"[DEBUG] [run_parallel_sessions] Recycled orphaned email: {orphaned_email}")
+                    except Exception as clean_err:
+                        print(f"[ERROR] [run_parallel_sessions] Failed to clean up orphaned email {orphaned_email}: {clean_err}")
+                # Clear the set
+                user_account_status[user_id]["active_emails"] = set()
+            
             # Calculate final total (should match total_requested)
             final_total = success_count + final_failed_count
             
@@ -2157,9 +2240,9 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                 'failed': final_failed_count,
                 'total': final_total,
                 'message': f"Total Success: {success_count} | Total Failed: {final_failed_count}"
-            }, room=f'user_{user_id}')
+            }, room=f'user_{user_id_int}')
             
-            print(f"[DEBUG] [run_parallel_sessions] Emitted account_summary event to user_{user_id}: success={success_count}, failed={final_failed_count}, total={final_total}")
+            print(f"[DEBUG] [run_parallel_sessions] Emitted account_summary event to user_{user_id_int}: success={success_count}, failed={final_failed_count}, total={final_total}")
             
             # Clear status for this user after emitting (optional, or keep for history)
             # user_account_status[user_id] = {"success": 0, "failed": 0}
@@ -2177,6 +2260,13 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                 completion_file.unlink()
         except Exception:
             pass
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        error_msg = f"[CRITICAL] Batch processing failed hard: {e}"
+        print(f"[ERROR] {error_msg}")
+        add_log(user_id, error_msg)
 
 # Reports API endpoints
 REPORTS_DIR = Path("reports")
