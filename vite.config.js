@@ -23,54 +23,56 @@ export default defineConfig(({ mode }) => {
   console.log('')
 
   return {
-  plugins: [react()],
-  server: {
-    port: FRONTEND_PORT,
-    allowedHosts: ALLOWED_HOSTS.length > 0 ? ALLOWED_HOSTS : undefined,
-    proxy: {
-      '/api': {
-        target: BACKEND_URL,
-        changeOrigin: true,
-        secure: false, // Set to false if using self-signed certificates (common with tunnels)
-        timeout: 30000, // 30 second timeout
-        configure: (proxy, _options) => {
-          // Track last error time per endpoint to throttle logging
-          const errorLogTimes = new Map()
-          const ERROR_LOG_THROTTLE_MS = 10000 // Only log same endpoint error once per 10 seconds
-          
-          proxy.on('error', (err, req, res) => {
-            const endpoint = req.url || 'unknown'
-            const now = Date.now()
-            const lastLogTime = errorLogTimes.get(endpoint) || 0
-            
-            // Only log if we haven't logged this endpoint error recently
-            if (now - lastLogTime > ERROR_LOG_THROTTLE_MS) {
-              errorLogTimes.set(endpoint, now)
-              console.error('❌ Proxy error:', err.message)
-              console.error('   Request:', req.method, req.url)
-              console.error('   Backend URL:', BACKEND_URL)
-              console.error('   Make sure the backend is running and accessible at:', BACKEND_URL)
-              console.error('   (This error will be throttled for 10 seconds per endpoint)')
-            }
-            
-            if (!res.headersSent) {
-              res.writeHead(502, {
-                'Content-Type': 'text/plain'
-              })
-              res.end('Bad Gateway: Backend connection failed. Check if backend is running.')
-            }
-          })
-          // Removed verbose proxy request logging - only errors are logged
+    plugins: [react()],
+    server: {
+      port: FRONTEND_PORT,
+      host: '0.0.0.0', // Listen on all interfaces for tunnel access
+      strictPort: false, // Allow port change if occupied
+      allowedHosts: ALLOWED_HOSTS.length > 0 ? ALLOWED_HOSTS : 'all', // Allow all hosts for Cloudflare Tunnel
+      proxy: {
+        '/api': {
+          target: BACKEND_URL,
+          changeOrigin: true,
+          secure: false, // Set to false if using self-signed certificates (common with tunnels)
+          timeout: 30000, // 30 second timeout
+          configure: (proxy, _options) => {
+            // Track last error time per endpoint to throttle logging
+            const errorLogTimes = new Map()
+            const ERROR_LOG_THROTTLE_MS = 10000 // Only log same endpoint error once per 10 seconds
+
+            proxy.on('error', (err, req, res) => {
+              const endpoint = req.url || 'unknown'
+              const now = Date.now()
+              const lastLogTime = errorLogTimes.get(endpoint) || 0
+
+              // Only log if we haven't logged this endpoint error recently
+              if (now - lastLogTime > ERROR_LOG_THROTTLE_MS) {
+                errorLogTimes.set(endpoint, now)
+                console.error('❌ Proxy error:', err.message)
+                console.error('   Request:', req.method, req.url)
+                console.error('   Backend URL:', BACKEND_URL)
+                console.error('   Make sure the backend is running and accessible at:', BACKEND_URL)
+                console.error('   (This error will be throttled for 10 seconds per endpoint)')
+              }
+
+              if (!res.headersSent) {
+                res.writeHead(502, {
+                  'Content-Type': 'text/plain'
+                })
+                res.end('Bad Gateway: Backend connection failed. Check if backend is running.')
+              }
+            })
+            // Removed verbose proxy request logging - only errors are logged
+          }
+        },
+        '/socket.io': {
+          target: BACKEND_URL,
+          ws: true,
+          secure: false, // Set to false if using self-signed certificates
+          changeOrigin: true
         }
-      },
-      '/socket.io': {
-        target: BACKEND_URL,
-        ws: true,
-        secure: false, // Set to false if using self-signed certificates
-        changeOrigin: true
       }
-    }
-  },
+    },
     build: {
       outDir: 'dist',
       assetsDir: 'assets'
