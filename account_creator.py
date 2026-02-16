@@ -133,7 +133,7 @@ def enqueue_number_for_cancel(request_id: str, acquired_at: float) -> None:
 def configure_caller_from_env() -> None:
     """
     Configure caller.py API settings from environment variables passed
-    by the backend (per-user API key, base URL, service, operator, country).
+    by the backend (per-user API key, base URL, service, server).
     """
     import json as json_module
     import time
@@ -148,15 +148,14 @@ def configure_caller_from_env() -> None:
     api_key = (os.environ.get("API_KEY") or os.environ.get("SMS_API_KEY") or "").strip()
     base_url = os.environ.get("API_BASE_URL") or ""
     service = os.environ.get("API_SERVICE") or ""
-    operator = os.environ.get("API_OPERATOR") or ""
-    country = os.environ.get("API_COUNTRY") or ""
+    server = os.environ.get("API_SERVER") or ""
     wait_for_otp_minutes = os.environ.get("WAIT_FOR_OTP") or "5"
     wait_for_second_otp_minutes = os.environ.get("WAIT_FOR_SECOND_OTP") or "5"
 
     # #region agent log
     try:
         with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-            log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"account_creator.py:115","message":"Environment variables read","data":{"API_KEY_set":bool(api_key),"API_KEY_length":len(api_key),"API_BASE_URL":base_url,"API_SERVICE":service,"API_OPERATOR":operator,"API_COUNTRY":country},"timestamp":int(time.time()*1000)}) + "\n")
+            log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"account_creator.py:115","message":"Environment variables read","data":{"API_KEY_set":bool(api_key),"API_KEY_length":len(api_key),"API_BASE_URL":base_url,"API_SERVICE":service,"API_SERVER":server},"timestamp":int(time.time()*1000)}) + "\n")
     except: pass
     # #endregion
 
@@ -179,8 +178,7 @@ def configure_caller_from_env() -> None:
     print(f"  API_KEY: {'***SET***' if api_key else 'NOT SET'}")
     print(f"  API_BASE_URL: {base_url if base_url else 'NOT SET (using default: ' + caller.BASE_URL + ')'}")
     print(f"  API_SERVICE: {service if service else 'NOT SET (using default: ' + caller.SERVICE + ')'}")
-    print(f"  API_OPERATOR: {operator if operator else 'NOT SET (using default: ' + caller.OPERATOR + ')'}")
-    print(f"  API_COUNTRY: {country if country else 'NOT SET (using default: ' + caller.COUNTRY + ')'}")
+    print(f"  API_SERVER: {server if server else 'NOT SET (using default: ' + caller.SERVER + ')'}")
     print(f"  WAIT_FOR_OTP: {wait_for_otp_minutes} minutes ({WAIT_FOR_OTP_SECONDS} seconds) - first OTP")
     print(f"  WAIT_FOR_SECOND_OTP: {wait_for_second_otp_minutes} minutes ({WAIT_FOR_SECOND_OTP_SECONDS} seconds) - second OTP")
 
@@ -193,17 +191,14 @@ def configure_caller_from_env() -> None:
     if service:
         caller.SERVICE = service
         print(f"[DEBUG] [account_creator] Updated SERVICE to: {service}")
-    if operator:
-        caller.OPERATOR = operator
-        print(f"[DEBUG] [account_creator] Updated OPERATOR to: {operator}")
-    if country:
-        caller.COUNTRY = country
-        print(f"[DEBUG] [account_creator] Updated COUNTRY to: {country}")
+    if server:
+        caller.SERVER = server
+        print(f"[DEBUG] [account_creator] Updated SERVER to: {server}")
     
     # #region agent log
     try:
         with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-            log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"account_creator.py:142","message":"Final caller configuration","data":{"BASE_URL":caller.BASE_URL,"SERVICE":caller.SERVICE,"OPERATOR":caller.OPERATOR,"COUNTRY":caller.COUNTRY,"API_KEY_set":bool(caller.API_KEY)},"timestamp":int(time.time()*1000)}) + "\n")
+            log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"D","location":"account_creator.py:142","message":"Final caller configuration","data":{"BASE_URL":caller.BASE_URL,"SERVICE":caller.SERVICE,"SERVER":caller.SERVER,"API_KEY_set":bool(caller.API_KEY)},"timestamp":int(time.time()*1000)}) + "\n")
     except: pass
     # #endregion
     
@@ -211,8 +206,7 @@ def configure_caller_from_env() -> None:
     print(f"[DEBUG] [account_creator] Final caller configuration:")
     print(f"  BASE_URL: {caller.BASE_URL}")
     print(f"  SERVICE: {caller.SERVICE}")
-    print(f"  OPERATOR: {caller.OPERATOR}")
-    print(f"  COUNTRY: {caller.COUNTRY}")
+    print(f"  SERVER: {caller.SERVER}")
 
 
 USE_USED_ACCOUNT = (os.environ.get("USE_USED_ACCOUNT") or "1").strip().lower() in (
@@ -272,8 +266,7 @@ async def main():
                             number_info = await asyncio.to_thread(
                                 lambda: caller.get_number(
                                     service=caller.SERVICE,
-                                    country=caller.COUNTRY,
-                                    operator=caller.OPERATOR
+                                    server=caller.SERVER
                                 )
                             )
                             if not number_info:

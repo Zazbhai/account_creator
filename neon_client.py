@@ -187,7 +187,7 @@ def upsert_api_settings(settings: Dict[str, Any]) -> None:
         return
     
     # Known columns in api_settings table
-    known_columns = ["base_url", "service", "operator", "country", "default_price", "wait_for_otp", "wait_for_second_otp"]
+    known_columns = ["base_url", "service", "server", "default_price", "wait_for_otp", "wait_for_second_otp"]
     
     # Filter settings to only include known columns
     filtered_settings = {k: v for k, v in settings.items() if k in known_columns}

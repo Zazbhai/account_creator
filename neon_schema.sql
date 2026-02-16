@@ -20,8 +20,7 @@ CREATE TABLE IF NOT EXISTS api_settings (
     id SERIAL PRIMARY KEY,
     base_url TEXT,
     service TEXT,
-    operator TEXT,
-    country TEXT,
+    server TEXT,
     default_price NUMERIC(10, 2),
     wait_for_otp INTEGER,
     wait_for_second_otp INTEGER

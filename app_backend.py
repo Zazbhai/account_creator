@@ -138,8 +138,7 @@ def load_imap_config() -> dict:
 DEFAULT_API_SETTINGS = {
     "base_url": caller.BASE_URL,
     "service": caller.SERVICE,
-    "operator": caller.OPERATOR,
-    "country": caller.COUNTRY,
+    "server": caller.SERVER,
     "default_price": 6.99,
     "wait_for_otp": 5,  # Default: 5 minutes (for first OTP)
     "wait_for_second_otp": 5,  # Default: 5 minutes (for second/phone OTP)
@@ -368,8 +367,7 @@ def process_number_cancel_queue_once() -> None:
                 
                 caller.BASE_URL = api_settings.get("base_url", caller.BASE_URL)
                 caller.SERVICE = api_settings.get("service", caller.SERVICE)
-                caller.OPERATOR = api_settings.get("operator", caller.OPERATOR)
-                caller.COUNTRY = api_settings.get("country", caller.COUNTRY)
+                caller.SERVER = api_settings.get("server", caller.SERVER)
                 
                 print(f"[NUMBER_QUEUE] Cancelling {req_id} (user_id: {user_id}, scheduled at {cancel_after}, now={now}, delay={now - cancel_after:.1f}s)")
                 result = caller.cancel_number(req_id)
@@ -548,10 +546,9 @@ def compute_balance_and_capacity(user_id, include_price=False):
 
         # Override caller module globals so we use the admin-configured URL/etc
         caller.API_KEY = user_api_key
-        caller.BASE_URL = api_settings.get("base_url", caller.BASE_URL)
-        caller.SERVICE = api_settings.get("service", caller.SERVICE)
-        caller.OPERATOR = api_settings.get("operator", caller.OPERATOR)
-        caller.COUNTRY = api_settings.get("country", caller.COUNTRY)
+        caller.BASE_URL = api_settings.get("base_url") or caller.BASE_URL
+        caller.SERVICE = api_settings.get("service") or caller.SERVICE
+        caller.SERVER = api_settings.get("server") or caller.SERVER
 
         print(f"[DEBUG] [compute_balance_and_capacity] Calling get_balance()...")
         balance = None
@@ -1554,7 +1551,7 @@ def imap_config():
 @app.route('/api/admin/api-settings', methods=['GET', 'POST'])
 @admin_required
 def admin_api_settings():
-    """Admin API settings: base URL, service, operator, country, default price."""
+    """Admin API settings: base URL, service, server, default price."""
     if request.method == 'GET':
         settings = load_api_settings()
         return jsonify({"settings": settings})
@@ -1564,8 +1561,7 @@ def admin_api_settings():
 
     base_url = data.get("base_url", "").strip() or settings["base_url"]
     service = data.get("service", "").strip() or settings["service"]
-    operator = data.get("operator", "").strip() or settings["operator"]
-    country = data.get("country", "").strip() or settings["country"]
+    server = data.get("server", "").strip() or settings["server"]
     default_price = data.get("default_price", settings["default_price"])
     wait_for_otp = data.get("wait_for_otp", settings.get("wait_for_otp", 5))
     wait_for_second_otp = data.get("wait_for_second_otp", settings.get("wait_for_second_otp", 5))
@@ -1592,8 +1588,7 @@ def admin_api_settings():
     new_settings = {
         "base_url": base_url,
         "service": service,
-        "operator": operator,
-        "country": country,
+        "server": server,
         "default_price": default_price,
         "wait_for_otp": wait_for_otp,
         "wait_for_second_otp": wait_for_second_otp,
@@ -1849,7 +1844,7 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account, 
     try:
         # Build environment for worker process, including per-user API credentials
         # and admin-configured API settings so that all SMS API calls use the
-        # correct key/base URL/service/operator/country.
+        # correct key/base URL/service/server.
         
         # #region agent log
         import json as json_module
@@ -1893,7 +1888,7 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account, 
         # #region agent log
         try:
             with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-                log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:1350","message":"API settings loaded","data":{"base_url":api_settings.get("base_url"),"service":api_settings.get("service"),"operator":api_settings.get("operator"),"country":api_settings.get("country")},"timestamp":int(time.time()*1000)}) + "\n")
+                log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"app_backend.py:1350","message":"API settings loaded","data":{"base_url":api_settings.get("base_url"),"service":api_settings.get("service"),"server":api_settings.get("server")},"timestamp":int(time.time()*1000)}) + "\n")
         except: pass
         # #endregion
         
@@ -1901,8 +1896,7 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account, 
         print(f"[DEBUG] [run_account_creator] Loaded API settings: {api_settings}")
         print(f"[DEBUG] [run_account_creator] base_url: {api_settings.get('base_url')}")
         print(f"[DEBUG] [run_account_creator] service: {api_settings.get('service')}")
-        print(f"[DEBUG] [run_account_creator] operator: {api_settings.get('operator')}")
-        print(f"[DEBUG] [run_account_creator] country: {api_settings.get('country')}")
+        print(f"[DEBUG] [run_account_creator] server: {api_settings.get('server')}")
         print(f"[DEBUG] [run_account_creator] user_api_key: {'SET (' + str(len(user_api_key)) + ' chars)' if user_api_key else 'NOT SET'}")
 
         env = os.environ.copy()
@@ -1918,10 +1912,9 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account, 
         
         # Always use values from api_settings (JSON file or Supabase)
         # Don't fall back to caller defaults - use what's in the settings
-        env['API_BASE_URL'] = str(api_settings.get("base_url", caller.BASE_URL))
-        env['API_SERVICE'] = str(api_settings.get("service", caller.SERVICE))
-        env['API_OPERATOR'] = str(api_settings.get("operator", caller.OPERATOR))
-        env['API_COUNTRY'] = str(api_settings.get("country", caller.COUNTRY))
+        env['API_BASE_URL'] = str(api_settings.get("base_url") or caller.BASE_URL)
+        env['API_SERVICE'] = str(api_settings.get("service") or caller.SERVICE)
+        env['API_SERVER'] = str(api_settings.get("server") or caller.SERVER)
         env['WAIT_FOR_OTP'] = str(api_settings.get("wait_for_otp", 5))  # In minutes (for first OTP)
         env['WAIT_FOR_SECOND_OTP'] = str(api_settings.get("wait_for_second_otp", 5))  # In minutes (for second/phone OTP)
         # Pass backend URL so workers can signal backend to stop all workers on timeout or report status
@@ -1931,7 +1924,7 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account, 
         # #region agent log
         try:
             with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-                log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"app_backend.py:1370","message":"Environment variables set","data":{"API_KEY_set":bool(env.get("API_KEY")),"API_KEY_length":len(env.get("API_KEY","")),"API_BASE_URL":env.get("API_BASE_URL"),"API_SERVICE":env.get("API_SERVICE"),"API_OPERATOR":env.get("API_OPERATOR"),"API_COUNTRY":env.get("API_COUNTRY")},"timestamp":int(time.time()*1000)}) + "\n")
+                log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"app_backend.py:1370","message":"Environment variables set","data":{"API_KEY_set":bool(env.get("API_KEY")),"API_KEY_length":len(env.get("API_KEY","")),"API_BASE_URL":env.get("API_BASE_URL"),"API_SERVICE":env.get("API_SERVICE"),"API_SERVER":env.get("API_SERVER")},"timestamp":int(time.time()*1000)}) + "\n")
         except: pass
         # #endregion
         
@@ -1939,8 +1932,7 @@ def run_account_creator(session_num, total_sessions, user_id, use_used_account, 
         print(f"[DEBUG] [run_account_creator] Setting environment variables:")
         print(f"  API_BASE_URL: {env.get('API_BASE_URL')}")
         print(f"  API_SERVICE: {env.get('API_SERVICE')}")
-        print(f"  API_OPERATOR: {env.get('API_OPERATOR')}")
-        print(f"  API_COUNTRY: {env.get('API_COUNTRY')}")
+        print(f"  API_SERVER: {env.get('API_SERVER')}")
         print(f"  WAIT_FOR_OTP: {env.get('WAIT_FOR_OTP')} minutes (first OTP)")
         print(f"  WAIT_FOR_SECOND_OTP: {env.get('WAIT_FOR_SECOND_OTP')} minutes (second OTP)")
         print(f"  API_KEY: {'SET (' + str(len(env.get('API_KEY', ''))) + ' chars)' if env.get('API_KEY') else 'NOT SET'}")

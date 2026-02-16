@@ -8,8 +8,7 @@ export default function AdminApi() {
   const [settings, setSettings] = useState({
     base_url: '',
     service: '',
-    operator: '',
-    country: '',
+    server: '',
     default_price: 6.99,
     wait_for_otp: 5,
     wait_for_second_otp: 5,
@@ -98,21 +97,11 @@ export default function AdminApi() {
           />
         </div>
         <div className="form-group">
-          <label>Operator:</label>
+          <label>Server:</label>
           <input
             type="text"
-            value={settings.operator}
-            onChange={(e) => setSettings({ ...settings, operator: e.target.value })}
-            required
-            disabled={saving}
-          />
-        </div>
-        <div className="form-group">
-          <label>Country:</label>
-          <input
-            type="text"
-            value={settings.country}
-            onChange={(e) => setSettings({ ...settings, country: e.target.value })}
+            value={settings.server || ''}
+            onChange={(e) => setSettings({ ...settings, server: e.target.value })}
             required
             disabled={saving}
           />

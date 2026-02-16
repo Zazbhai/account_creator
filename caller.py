@@ -6,8 +6,7 @@ from urllib import error, parse, request
 
 # API credentials and defaults
 API_KEY = "2ce12168a4f72374207d61fc634ba23c79cf"
-OPERATOR = "1"
-COUNTRY = "22"
+SERVER = "1"
 SERVICE = "pfk"
 
 BASE_URL = "https://api.temporasms.com/stubs/handler_api.php"
@@ -24,7 +23,7 @@ def _http_get(params: Dict[str, Any]) -> str:
     # #region agent log
     try:
         with open(r"c:\Users\zgarm\OneDrive\Desktop\Account creator\.cursor\debug.log", "a", encoding='utf-8') as log_file:
-            log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"caller.py:15","message":"_http_get entry","data":{"BASE_URL":BASE_URL,"SERVICE":SERVICE,"OPERATOR":OPERATOR,"COUNTRY":COUNTRY,"API_KEY_set":bool(API_KEY),"API_KEY_length":len(API_KEY)},"timestamp":int(time.time()*1000)}) + "\n")
+            log_file.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"E","location":"caller.py:15","message":"_http_get entry","data":{"BASE_URL":BASE_URL,"SERVICE":SERVICE,"SERVER":SERVER,"API_KEY_set":bool(API_KEY),"API_KEY_length":len(API_KEY)},"timestamp":int(time.time()*1000)}) + "\n")
     except: pass
     # #endregion
     
@@ -42,9 +41,9 @@ def _http_get(params: Dict[str, Any]) -> str:
     print("-" * 80)
     print(f"URL: {BASE_URL}")
     print(f"Action: {params.get('action', 'unknown')}")
-    print(f"[CONFIG] Service: {SERVICE} | Operator: {OPERATOR} | Country: {COUNTRY}")
+    print(f"[CONFIG] Service: {SERVICE} | Server: {SERVER}")
     print(f"[CONFIG] API Key: {api_key_display} (length: {len(API_KEY)})")
-    print(f"Params (for request): service={params.get('service', SERVICE)}, operator={params.get('operator', OPERATOR)}, country={params.get('country', COUNTRY)}")
+    print(f"Params (for request): service={params.get('service', SERVICE)}, server={params.get('server', SERVER)}")
     print(f"Full URL (redacted): {BASE_URL}?{parse.urlencode(safe_params)}")
     start_time = time.time()
 
@@ -107,13 +106,12 @@ def parse_balance(text: str) -> Optional[float]:
         return None
 
 
-def get_prices(country: str = COUNTRY, operator: str = OPERATOR) -> str:
-    """Get pricing for the given country/operator."""
+def get_prices(server: str = SERVER) -> str:
+    """Get pricing for the given server."""
     return _http_get(
         {
             "action": "getPrices",
-            "country": country,
-            "operator": operator,
+            "server": server,
         }
     )
 
@@ -127,18 +125,21 @@ def parse_prices(text: str) -> Dict[str, Any]:
 
 
 def get_price_for_service(
-    service: str = SERVICE, country: str = COUNTRY, operator: str = OPERATOR
+    service: str = SERVICE, server: str = SERVER
 ) -> Optional[str]:
     """
     Fetch price data and return the price string for the given service,
     or None if not found.
     """
-    raw = get_prices(country=country, operator=operator)
+    raw = get_prices(server=server)
     data = parse_prices(raw)
 
-    # Expected shape: { "22": { "pbk": { "2.99": "467" } } }
-    country_block = data.get(str(country), {})
-    service_block = country_block.get(service, {})
+    # Expected shape: { "1": { "pbk": { "2.99": "467" } } } where "1" is the server
+    # Note: Adjusting logic to inspect the data structure based on typical API response
+    # If the API returns structure by server ID, we look it up.
+    
+    server_block = data.get(str(server), {})
+    service_block = server_block.get(service, {})
     if not isinstance(service_block, dict):
         return None
 
@@ -148,8 +149,7 @@ def get_price_for_service(
 
 def get_number(
     service: str = SERVICE,
-    country: str = COUNTRY,
-    operator: str = OPERATOR,
+    server: str = SERVER,
 ) -> Optional[Tuple[str, str]]:
     """
     Request a virtual number for a service.
@@ -160,8 +160,7 @@ def get_number(
         {
             "action": "getNumber",
             "service": service,
-            "country": country,
-            "operator": operator,
+            "server": server,
         }
     )
     # Check for NO_NUMBERS response before parsing
