@@ -2071,194 +2071,198 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
     failed_sessions = []  # Track failed sessions for retry
     
     try:
-        while remaining > 0:
-            # Check if stop was requested
-            with user_stop_flags_lock:
-                if user_stop_flags.get(user_id, False):
-                    add_log(user_id, "[INFO] Stop requested. Stopping batch execution.")
-                    break
-            batch_size = min(max_parallel, remaining)
-            futures = []
-            session_map = {}  # Map future to session number
-            
-            with ThreadPoolExecutor(max_workers=max_parallel) as executor:
-                for i in range(batch_size):
-                    current_session = session_num + i
-                    if i == 0:
-                        future = executor.submit(
-                            run_account_creator, current_session, total_accounts, user_id, use_used_account, retry_failed
-                        )
-                        futures.append(future)
-                        session_map[future] = current_session
-                    else:
-                        # Optimize for 4 vCPU: Stagger worker starts to reduce CPU spikes
-                        # Reduce delay slightly but still stagger to prevent resource contention
-                        time.sleep(1.5)  # Reduced from 2s to 1.5s for faster startup
-                        future = executor.submit(
-                            run_account_creator, current_session, total_accounts, user_id, use_used_account, retry_failed
-                        )
-                        futures.append(future)
-                        session_map[future] = current_session
-                
-                for future in as_completed(futures):
-                    # Check stop flag again
-                    with user_stop_flags_lock:
-                        if user_stop_flags.get(user_id, False):
-                            break
-                    
-                    session_num_for_future = session_map.get(future, session_num)
-                    try:
-                        future.result()
-                        # Session completed successfully
-                    except Exception as e:
-                        error_msg = f"[ERROR] Session {session_num_for_future} failed: {e}"
-                        add_log(user_id, error_msg)
-                        # Track failed session for retry if enabled
-                        if retry_failed:
-                            failed_sessions.append(session_num_for_future)
-            
-            # Check stop flag before continuing
-            with user_stop_flags_lock:
-                if user_stop_flags.get(user_id, False):
-                    break
-            
-            session_num += batch_size
-            remaining -= batch_size
-            
-            # If retry is enabled and we have failed sessions, retry them
-            if retry_failed and failed_sessions:
-                retry_count = len(failed_sessions)
-                add_log(user_id, f"[INFO] Retrying {retry_count} failed session(s)...")
-                # Retry failed sessions one by one
-                for failed_session in failed_sessions:
-                    # Check stop flag before each retry
-                    with user_stop_flags_lock:
-                        if user_stop_flags.get(user_id, False):
-                            break
-                    try:
-                        run_account_creator(failed_session, total_accounts, user_id, use_used_account, retry_failed)
-                        add_log(user_id, f"[INFO] Retry session {failed_session} completed successfully")
-                    except Exception as e:
-                        error_msg = f"[ERROR] Retry session {failed_session} failed again: {e}"
-                        add_log(user_id, error_msg)
-                # Clear failed sessions after retry attempt
-                failed_sessions = []
-        
-        # Track account success/failure by parsing logs or using API calls
-        # For now, we'll track via API endpoint calls from account_creator.py
-        # If margin_per_account is provided, we'll refund for any failures at the end
-        if margin_per_account:
-            print(f"[DEBUG] [run_parallel_sessions] Margin tracking enabled: ₹{margin_per_account:.2f} per account")
-        
-        # Get final account status summary and emit to frontend
-        # Wait a moment for any pending status reports from workers
-        time.sleep(3)
-        
-        with account_status_lock:
-            if user_id not in user_account_status:
-                user_account_status[user_id] = {
-                    "success": 0, "failed": 0, "total_requested": total_accounts,
-                    "active_emails": set(), "reported_emails": set()
-                }
-            status = user_account_status[user_id]
-            success_count = status.get("success", 0)
-            failed_count = status.get("failed", 0)
-            total_requested = status.get("total_requested", 0)
-            total_attempted = success_count + failed_count
-            
-            # Calculate remaining accounts that were not reported (workers that didn't report status)
-            remaining_count = max(0, total_requested - total_attempted)
-            
-            print(f"[DEBUG] [run_parallel_sessions] Final account status (before handling remaining):")
-            print(f"  Total requested: {total_requested}")
-            print(f"  Success (reported): {success_count}")
-            print(f"  Failed (reported): {failed_count}")
-            print(f"  Total attempted (reported): {total_attempted}")
-            print(f"  Remaining (not reported): {remaining_count}")
-            print(f"[DEBUG] [run_parallel_sessions] Margin balance calculation:")
-            print(f"  Per account fee: ₹{margin_per_account:.2f}")
-            print(f"  Upfront deduction: ₹{total_requested * margin_per_account:.2f} (for {total_requested} accounts)")
-            print(f"  Refunded so far: ₹{failed_count * margin_per_account:.2f} (for {failed_count} failed accounts)")
-            print(f"  Expected remaining refund: ₹{remaining_count * margin_per_account:.2f} (for {remaining_count} unaccounted accounts)")
-            
-            # If there are remaining accounts that didn't report (stopped before completion)
-            # Refund for them and mark as failed for summary
-            final_failed_count = failed_count
-            if remaining_count > 0 and margin_per_account:
-                total_refund = remaining_count * margin_per_account
-                print(f"[DEBUG] [run_parallel_sessions] Found {remaining_count} accounts that didn't report status (stopped/interrupted)")
-                print(f"[DEBUG] [run_parallel_sessions] Refunding ₹{total_refund:.2f} for these accounts")
-                if update_margin_balance(user_id, total_refund, f"Refunding for {remaining_count} account(s) that didn't complete"):
-                    # Add to failed count for accurate summary (these accounts didn't succeed)
-                    final_failed_count = failed_count + remaining_count
-                    user_account_status[user_id]["failed"] = final_failed_count
-                    print(f"[DEBUG] [run_parallel_sessions] Updated failed count to {final_failed_count} (includes {remaining_count} stopped accounts)")
-                    print(f"[DEBUG] [run_parallel_sessions] Total refunded: ₹{final_failed_count * margin_per_account:.2f} (for {final_failed_count} failed accounts)")
-                else:
-                    print(f"[ERROR] [run_parallel_sessions] Failed to refund for {remaining_count} unaccounted accounts")
-            
-            # --- CRITICAL CLEANUP: Unreserve and Recycle Active Emails that didn't finish ---
-            active_emails = user_account_status[user_id].get("active_emails", set())
-            if active_emails:
-                print(f"[DEBUG] [run_parallel_sessions] Cleaning up {len(active_emails)} orphaned active emails: {active_emails}")
-                for orphaned_email in list(active_emails):
-                    try:
-                        # 1. Add back to recycle pool so it's prioritized next time
-                        imap.add_failed_email(orphaned_email)
-                        # 2. Remove from reserved list so other workers can see it
-                        imap.unreserve_email(orphaned_email)
-                        print(f"[DEBUG] [run_parallel_sessions] Recycled orphaned email: {orphaned_email}")
-                    except Exception as clean_err:
-                        print(f"[ERROR] [run_parallel_sessions] Failed to clean up orphaned email {orphaned_email}: {clean_err}")
-                # Clear the set
-                user_account_status[user_id]["active_emails"] = set()
-            
-            # Calculate final total (should match total_requested)
-            final_total = success_count + final_failed_count
-            
-            # Validate: total should not exceed total_requested
-            if final_total > total_requested:
-                print(f"[WARN] [run_parallel_sessions] Total ({final_total}) exceeds requested ({total_requested})! Adjusting...")
-                # Cap failed count to ensure total doesn't exceed requested
-                final_failed_count = max(0, total_requested - success_count)
-                user_account_status[user_id]["failed"] = final_failed_count
-                final_total = success_count + final_failed_count
-                print(f"[DEBUG] [run_parallel_sessions] Adjusted: Success={success_count}, Failed={final_failed_count}, Total={final_total}")
-            
-            # Always emit account summary when workers complete
-            print(f"[DEBUG] [run_parallel_sessions] Account Summary - Success: {success_count}, Failed: {final_failed_count}, Total: {final_total}")
-            socketio.emit('account_summary', {
-                'success': success_count,
-                'failed': final_failed_count,
-                'total': final_total,
-                'message': f"Total Success: {success_count} | Total Failed: {final_failed_count}"
-            }, room=f'user_{user_id_int}')
-            
-            print(f"[DEBUG] [run_parallel_sessions] Emitted account_summary event to user_{user_id_int}: success={success_count}, failed={final_failed_count}, total={final_total}")
-            
-            # Clear status for this user after emitting (optional, or keep for history)
-            # user_account_status[user_id] = {"success": 0, "failed": 0}
-        
-        completion_msg = "[INFO] All workers completed!"
-        add_log(user_id, completion_msg)
-        latest_log = LOG_DIR / "latest_logs.txt"
         try:
-            with open(latest_log, 'a', encoding='utf-8') as f:
-                f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {completion_msg}\n")
-        except Exception:
-            pass
+            while remaining > 0:
+                # Check if stop was requested
+                with user_stop_flags_lock:
+                    if user_stop_flags.get(user_id, False):
+                        add_log(user_id, "[INFO] Stop requested. Stopping batch execution.")
+                        break
+                batch_size = min(max_parallel, remaining)
+                futures = []
+                session_map = {}  # Map future to session number
+                
+                with ThreadPoolExecutor(max_workers=max_parallel) as executor:
+                    for i in range(batch_size):
+                        current_session = session_num + i
+                        if i == 0:
+                            future = executor.submit(
+                                run_account_creator, current_session, total_accounts, user_id, use_used_account, retry_failed
+                            )
+                            futures.append(future)
+                            session_map[future] = current_session
+                        else:
+                            # Optimize for 4 vCPU: Stagger worker starts to reduce CPU spikes
+                            # Reduce delay slightly but still stagger to prevent resource contention
+                            time.sleep(1.5)  # Reduced from 2s to 1.5s for faster startup
+                            future = executor.submit(
+                                run_account_creator, current_session, total_accounts, user_id, use_used_account, retry_failed
+                            )
+                            futures.append(future)
+                            session_map[future] = current_session
+                    
+                    for future in as_completed(futures):
+                        # Check stop flag again
+                        with user_stop_flags_lock:
+                            if user_stop_flags.get(user_id, False):
+                                break
+                        
+                        session_num_for_future = session_map.get(future, session_num)
+                        try:
+                            future.result()
+                            # Session completed successfully
+                        except Exception as e:
+                            error_msg = f"[ERROR] Session {session_num_for_future} failed: {e}"
+                            add_log(user_id, error_msg)
+                            # Track failed session for retry if enabled
+                            if retry_failed:
+                                failed_sessions.append(session_num_for_future)
+                
+                # Check stop flag before continuing
+                with user_stop_flags_lock:
+                    if user_stop_flags.get(user_id, False):
+                        break
+                
+                session_num += batch_size
+                remaining -= batch_size
+                
+                # If retry is enabled and we have failed sessions, retry them
+                if retry_failed and failed_sessions:
+                    retry_count = len(failed_sessions)
+                    add_log(user_id, f"[INFO] Retrying {retry_count} failed session(s)...")
+                    # Retry failed sessions one by one
+                    for failed_session in failed_sessions:
+                        # Check stop flag before each retry
+                        with user_stop_flags_lock:
+                            if user_stop_flags.get(user_id, False):
+                                break
+                        try:
+                            run_account_creator(failed_session, total_accounts, user_id, use_used_account, retry_failed)
+                            add_log(user_id, f"[INFO] Retry session {failed_session} completed successfully")
+                        except Exception as e:
+                            error_msg = f"[ERROR] Retry session {failed_session} failed again: {e}"
+                            add_log(user_id, error_msg)
+                    # Clear failed sessions after retry attempt
+                    failed_sessions = []
+            
+            # Track account success/failure by parsing logs or using API calls
+            # For now, we'll track via API endpoint calls from account_creator.py
+            # If margin_per_account is provided, we'll refund for any failures at the end
+            if margin_per_account:
+                print(f"[DEBUG] [run_parallel_sessions] Margin tracking enabled: ₹{margin_per_account:.2f} per account")
+            
+            # Get final account status summary and emit to frontend
+            # Wait a moment for any pending status reports from workers
+            time.sleep(3)
+            
+            with account_status_lock:
+                if user_id not in user_account_status:
+                    user_account_status[user_id] = {
+                        "success": 0, "failed": 0, "total_requested": total_accounts,
+                        "active_emails": set(), "reported_emails": set()
+                    }
+                status = user_account_status[user_id]
+                success_count = status.get("success", 0)
+                failed_count = status.get("failed", 0)
+                total_requested = status.get("total_requested", 0)
+                total_attempted = success_count + failed_count
+                
+                # Calculate remaining accounts that were not reported (workers that didn't report status)
+                remaining_count = max(0, total_requested - total_attempted)
+                
+                print(f"[DEBUG] [run_parallel_sessions] Final account status (before handling remaining):")
+                print(f"  Total requested: {total_requested}")
+                print(f"  Success (reported): {success_count}")
+                print(f"  Failed (reported): {failed_count}")
+                print(f"  Total attempted (reported): {total_attempted}")
+                print(f"  Remaining (not reported): {remaining_count}")
+                print(f"[DEBUG] [run_parallel_sessions] Margin balance calculation:")
+                print(f"  Per account fee: ₹{margin_per_account:.2f}")
+                print(f"  Upfront deduction: ₹{total_requested * margin_per_account:.2f} (for {total_requested} accounts)")
+                print(f"  Refunded so far: ₹{failed_count * margin_per_account:.2f} (for {failed_count} failed accounts)")
+                print(f"  Expected remaining refund: ₹{remaining_count * margin_per_account:.2f} (for {remaining_count} unaccounted accounts)")
+                
+                # If there are remaining accounts that didn't report (stopped before completion)
+                # Refund for them and mark as failed for summary
+                final_failed_count = failed_count
+                if remaining_count > 0 and margin_per_account:
+                    total_refund = remaining_count * margin_per_account
+                    print(f"[DEBUG] [run_parallel_sessions] Found {remaining_count} accounts that didn't report status (stopped/interrupted)")
+                    print(f"[DEBUG] [run_parallel_sessions] Refunding ₹{total_refund:.2f} for these accounts")
+                    if update_margin_balance(user_id, total_refund, f"Refunding for {remaining_count} account(s) that didn't complete"):
+                        # Add to failed count for accurate summary (these accounts didn't succeed)
+                        final_failed_count = failed_count + remaining_count
+                        user_account_status[user_id]["failed"] = final_failed_count
+                        print(f"[DEBUG] [run_parallel_sessions] Updated failed count to {final_failed_count} (includes {remaining_count} stopped accounts)")
+                        print(f"[DEBUG] [run_parallel_sessions] Total refunded: ₹{final_failed_count * margin_per_account:.2f} (for {final_failed_count} failed accounts)")
+                    else:
+                        print(f"[ERROR] [run_parallel_sessions] Failed to refund for {remaining_count} unaccounted accounts")
+                
+                # --- CRITICAL CLEANUP: Unreserve and Recycle Active Emails that didn't finish ---
+                active_emails = user_account_status[user_id].get("active_emails", set())
+                if active_emails:
+                    print(f"[DEBUG] [run_parallel_sessions] Cleaning up {len(active_emails)} orphaned active emails: {active_emails}")
+                    for orphaned_email in list(active_emails):
+                        try:
+                            # 1. Add back to recycle pool so it's prioritized next time
+                            imap.add_failed_email(orphaned_email)
+                            # 2. Remove from reserved list so other workers can see it
+                            imap.unreserve_email(orphaned_email)
+                            print(f"[DEBUG] [run_parallel_sessions] Recycled orphaned email: {orphaned_email}")
+                        except Exception as clean_err:
+                            print(f"[ERROR] [run_parallel_sessions] Failed to clean up orphaned email {orphaned_email}: {clean_err}")
+                    # Clear the set
+                    user_account_status[user_id]["active_emails"] = set()
+                
+                # Calculate final total (should match total_requested)
+                final_total = success_count + final_failed_count
+                
+                # Validate: total should not exceed total_requested
+                if final_total > total_requested:
+                    print(f"[WARN] [run_parallel_sessions] Total ({final_total}) exceeds requested ({total_requested})! Adjusting...")
+                    # Cap failed count to ensure total doesn't exceed requested
+                    final_failed_count = max(0, total_requested - success_count)
+                    user_account_status[user_id]["failed"] = final_failed_count
+                    final_total = success_count + final_failed_count
+                    print(f"[DEBUG] [run_parallel_sessions] Adjusted: Success={success_count}, Failed={final_failed_count}, Total={final_total}")
+                
+                # Always emit account summary when workers complete
+                print(f"[DEBUG] [run_parallel_sessions] Account Summary - Success: {success_count}, Failed: {final_failed_count}, Total: {final_total}")
+                socketio.emit('account_summary', {
+                    'success': success_count,
+                    'failed': final_failed_count,
+                    'total': final_total,
+                    'message': f"Total Success: {success_count} | Total Failed: {final_failed_count}"
+                }, room=f'user_{user_id}')
+                
+                print(f"[DEBUG] [run_parallel_sessions] Emitted account_summary event to user_{user_id}: success={success_count}, failed={final_failed_count}, total={final_total}")
+                
+            completion_msg = "[INFO] All workers completed!"
+            add_log(user_id, completion_msg)
+            latest_log = LOG_DIR / "latest_logs.txt"
+            try:
+                with open(latest_log, 'a', encoding='utf-8') as f:
+                    f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {completion_msg}\n")
+            except Exception:
+                pass
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            error_msg = f"[CRITICAL] Batch processing failed hard: {e}"
+            print(f"[ERROR] {error_msg}")
+            add_log(user_id, error_msg)
+            
+    finally:
+        # Cleanup flag and notify frontend
         try:
             if completion_file.exists():
                 completion_file.unlink()
-        except Exception:
-            pass
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        error_msg = f"[CRITICAL] Batch processing failed hard: {e}"
-        print(f"[ERROR] {error_msg}")
-        add_log(user_id, error_msg)
+            print(f"[DEBUG] [run_parallel_sessions] Removed running flag for user {user_id}")
+        except Exception as e:
+            print(f"[WARN] [run_parallel_sessions] Failed to remove running flag: {e}")
+            
+        socketio.emit('worker_status', {'running': False}, room=f'user_{user_id}')
 
 # Reports API endpoints
 REPORTS_DIR = Path("reports")
