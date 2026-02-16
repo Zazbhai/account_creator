@@ -2071,7 +2071,6 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
     failed_sessions = []  # Track failed sessions for retry
     
     try:
-        try:
             while remaining > 0:
                 # Check if stop was requested
                 with user_stop_flags_lock:
