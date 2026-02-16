@@ -254,7 +254,7 @@ async def main():
                 async with async_playwright() as p:
                     try:
                         print("[DEBUG] Launching browser...")
-                        browser = await p.chromium.launch(headless=False)
+                        browser = await p.chromium.launch(headless=True)
                         context = await browser.new_context()
                         page = await context.new_page()
                         # ---- GENERATE EMAIL ----
