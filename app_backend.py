@@ -2148,10 +2148,16 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
             # Track account success/failure by parsing logs or using API calls
             # For now, we'll track via API endpoint calls from account_creator.py
             # If margin_per_account is provided, we'll refund for any failures at the end
-            if margin_per_account:
-                print(f"[DEBUG] [run_parallel_sessions] Margin tracking enabled: ₹{margin_per_account:.2f} per account")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        error_msg = f"[CRITICAL] Batch processing failed hard: {e}"
+        print(f"[ERROR] {error_msg}")
+        add_log(user_id, error_msg)
             
-            # Get final account status summary and emit to frontend
+    finally:
+        # --- CRITICAL: Always perform accounting and emit summary ---
+        try:
             # Wait a moment for any pending status reports from workers
             time.sleep(3)
             
@@ -2176,11 +2182,13 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                 print(f"  Failed (reported): {failed_count}")
                 print(f"  Total attempted (reported): {total_attempted}")
                 print(f"  Remaining (not reported): {remaining_count}")
-                print(f"[DEBUG] [run_parallel_sessions] Margin balance calculation:")
-                print(f"  Per account fee: ₹{margin_per_account:.2f}")
-                print(f"  Upfront deduction: ₹{total_requested * margin_per_account:.2f} (for {total_requested} accounts)")
-                print(f"  Refunded so far: ₹{failed_count * margin_per_account:.2f} (for {failed_count} failed accounts)")
-                print(f"  Expected remaining refund: ₹{remaining_count * margin_per_account:.2f} (for {remaining_count} unaccounted accounts)")
+                
+                if margin_per_account:
+                    print(f"[DEBUG] [run_parallel_sessions] Margin balance calculation:")
+                    print(f"  Per account fee: ₹{margin_per_account:.2f}")
+                    print(f"  Upfront deduction: ₹{total_requested * margin_per_account:.2f} (for {total_requested} accounts)")
+                    print(f"  Refunded so far: ₹{failed_count * margin_per_account:.2f} (for {failed_count} failed accounts)")
+                    print(f"  Expected remaining refund: ₹{remaining_count * margin_per_account:.2f} (for {remaining_count} unaccounted accounts)")
                 
                 # If there are remaining accounts that didn't report (stopped before completion)
                 # Refund for them and mark as failed for summary
@@ -2228,6 +2236,8 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                 
                 # Always emit account summary when workers complete
                 print(f"[DEBUG] [run_parallel_sessions] Account Summary - Success: {success_count}, Failed: {final_failed_count}, Total: {final_total}")
+                
+                # CRITICAL: Use correct variable 'user_id' (passed as argument), not 'user_id_int'
                 socketio.emit('account_summary', {
                     'success': success_count,
                     'failed': final_failed_count,
@@ -2245,15 +2255,11 @@ def run_parallel_sessions(total_accounts, max_parallel, user_id, use_used_accoun
                     f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {completion_msg}\n")
             except Exception:
                 pass
-
         except Exception as e:
+            print(f"[ERROR] [run_parallel_sessions] Error in finally/summary block: {e}")
             import traceback
             traceback.print_exc()
-            error_msg = f"[CRITICAL] Batch processing failed hard: {e}"
-            print(f"[ERROR] {error_msg}")
-            add_log(user_id, error_msg)
-            
-    finally:
+
         # Cleanup flag and notify frontend
         try:
             if completion_file.exists():

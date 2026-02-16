@@ -60,7 +60,7 @@ def _report_account_status(status: str, email: str = None) -> None:
         response = requests.post(
             api_url,
             json=payload,
-            timeout=5,
+            timeout=15,
             headers={"Content-Type": "application/json"}
         )
         
