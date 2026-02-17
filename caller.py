@@ -2,7 +2,8 @@ import json
 import re
 import time
 from typing import Any, Dict, Optional, Tuple
-from urllib import error, parse, request
+from urllib import parse
+from curl_cffi import requests as cffi_requests
 
 # API credentials and defaults
 API_KEY = "2ce12168a4f72374207d61fc634ba23c79cf"
@@ -15,6 +16,7 @@ def _http_get(params: Dict[str, Any]) -> str:
     """
     Perform a GET request with shared base URL and API key.
     Returns raw text from the API or raises ValueError on network/HTTP issues.
+    Uses curl_cffi to mimic Chrome browser and bypass Cloudflare protection.
     """
     import datetime
     import json as json_module
@@ -28,14 +30,13 @@ def _http_get(params: Dict[str, Any]) -> str:
     # #endregion
     
     merged = {"api_key": API_KEY, **params}
-    url = f"{BASE_URL}?{parse.urlencode(merged)}"
     
-    # Create a safe version of params for logging (redact API key but show first 4 chars for verification)
+    # Create a safe version of params for logging
     api_key_display = f"{API_KEY[:4]}...{API_KEY[-4:]}" if len(API_KEY) > 8 else "***REDACTED***"
     safe_params = {k: (api_key_display if k == 'api_key' else v) for k, v in merged.items()}
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     
-    # Log the API call (using plain text to avoid Windows encoding issues)
+    # Log the API call
     print("=" * 80)
     print(f"[CALLER API REQUEST] {timestamp}")
     print("-" * 80)
@@ -44,44 +45,59 @@ def _http_get(params: Dict[str, Any]) -> str:
     print(f"[CONFIG] Service: {SERVICE} | Server: {SERVER}")
     print(f"[CONFIG] API Key: {api_key_display} (length: {len(API_KEY)})")
     print(f"Params (for request): service={params.get('service', SERVICE)}, server={params.get('server', SERVER)}")
-    print(f"Full URL (redacted): {BASE_URL}?{parse.urlencode(safe_params)}")
+    # We construct the URL string for logging consistency
+    full_url_for_log = f"{BASE_URL}?{parse.urlencode(safe_params)}"
+    print(f"Full URL (redacted): {full_url_for_log}")
     start_time = time.time()
 
     try:
-        with request.urlopen(url, timeout=15) as resp:
-            duration = (time.time() - start_time) * 1000  # Convert to milliseconds
-            response_text = resp.read().decode("utf-8").strip()
-            
-            # Log successful response
-            print(f"[OK] Status: {resp.status} {resp.reason}")
-            print(f"Duration: {duration:.2f}ms")
-            print(f"Response: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
-            print(f"Response Length: {len(response_text)} bytes")
-            print("=" * 80)
-            print()
-            
-            # API returns plain text like: ACCESS_BALANCE:123.45
-            return response_text
-    except error.HTTPError as exc:
-        duration = (time.time() - start_time) * 1000
-        print(f"[ERROR] HTTP Error: {exc.code} {exc.reason}")
+        # Use curl_cffi to impersonate Chrome
+        # timeout=30 as recommended in prompt
+        response = cffi_requests.get(
+            BASE_URL,
+            params=merged,
+            impersonate="chrome110",
+            timeout=30
+        )
+        
+        duration = (time.time() - start_time) * 1000  # Convert to milliseconds
+        response_text = response.text.strip()
+        
+        # Raise HTTPError for bad status codes (4xx, 5xx) so we catch them below
+        response.raise_for_status()
+
+        # Log successful response
+        print(f"[OK] Status: {response.status_code} {response.reason}")
         print(f"Duration: {duration:.2f}ms")
-        if hasattr(exc, 'read'):
+        print(f"Response: {response_text[:200]}{'...' if len(response_text) > 200 else ''}")
+        print(f"Response Length: {len(response_text)} bytes")
+        print("=" * 80)
+        print()
+        
+        return response_text
+
+    except cffi_requests.exceptions.HTTPError as exc:
+        duration = (time.time() - start_time) * 1000
+        print(f"[ERROR] HTTP Error: {exc.response.status_code if exc.response else 'Unknown'} {str(exc)}")
+        print(f"Duration: {duration:.2f}ms")
+        if exc.response:
             try:
-                error_body = exc.read().decode("utf-8")[:200]
+                error_body = exc.response.text[:200]
                 print(f"Error Response: {error_body}")
             except:
                 pass
         print("=" * 80)
         print()
-        raise ValueError(f"API HTTP {exc.code}: {exc.reason}") from exc
-    except error.URLError as exc:
+        raise ValueError(f"API HTTP {exc.response.status_code if exc.response else 'Unknown'}: {str(exc)}") from exc
+
+    except cffi_requests.exceptions.RequestException as exc:
         duration = (time.time() - start_time) * 1000
-        print(f"[ERROR] Network Error: {exc.reason}")
+        print(f"[ERROR] Network/Request Error: {str(exc)}")
         print(f"Duration: {duration:.2f}ms")
         print("=" * 80)
         print()
-        raise ValueError(f"Network error: {exc.reason}") from exc
+        raise ValueError(f"Network error: {str(exc)}") from exc
+
     except Exception as exc:
         duration = (time.time() - start_time) * 1000
         print(f"[ERROR] Unexpected Error: {type(exc).__name__}: {exc}")
