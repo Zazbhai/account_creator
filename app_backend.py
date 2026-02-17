@@ -617,14 +617,19 @@ def check_auth():
         response = jsonify({"authenticated": False})
     else:
         user = get_user_by_username(session.get('username'))
-        response = jsonify({
-            "authenticated": True,
-            "user": {
-                "id": user.get('id'),
-                "username": user.get('username'),
-                "role": user.get('role')
-            }
-        })
+        if user:
+            response = jsonify({
+                "authenticated": True,
+                "user": {
+                    "id": user.get('id'),
+                    "username": user.get('username'),
+                    "role": user.get('role')
+                }
+            })
+        else:
+            # User in session but not found in DB/file - treat as logged out
+            session.clear()
+            response = jsonify({"authenticated": False})
     
     # Prevent caching of auth status
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"

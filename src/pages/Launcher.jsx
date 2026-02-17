@@ -224,51 +224,52 @@ export default function Launcher() {
 
       const handleAccountSummary = (data) => {
         console.log('[DEBUG] [Launcher] Socket event: account_summary', data)
-        
+
         const { success, failed, total } = data || {}
         const successCount = success || 0
         const failedCount = failed || 0
         const totalCount = total || 0
-        
+
         // Play completion sound
         playCompletionSound()
-        
+
         // Show browser notification
         notifyAccountCompletion(successCount, failedCount, totalCount)
-        
+
         // Format message with line breaks
         const summaryMessage = `Account Creation Complete!\n\n✅ Successful: ${successCount}\n❌ Failed: ${failedCount}\n📊 Total: ${totalCount}`
-        
+
         // Show popup with summary
         // Use 'success' type if all succeeded (failed === 0), otherwise use 'error' type
         setPopup({
           type: failedCount === 0 ? 'success' : 'error',
-          message: summaryMessage
+          message: summaryMessage,
+          autoCloseMs: 0
         })
-        
+
         console.log('[DEBUG] [Launcher] Showing account summary popup:', { successCount, failedCount, totalCount })
       }
 
       const handleNoNumbers = (data) => {
         console.log('[DEBUG] [Launcher] Socket event: no_numbers', data)
-        
+
         const message = data?.message || 'No numbers available right now. Please try again after some time.'
-        
+
         // Show error popup
         setPopup({
           type: 'error',
           message: message
         })
-        
+
         console.log('[DEBUG] [Launcher] Showing NO_NUMBERS popup:', message)
       }
 
       socket.on('balance', handleBalance)
 
       socket.on('worker_status', handleWorkerStatus)
-      
+
       socket.on('account_summary', handleAccountSummary)
-      
+
       socket.on('no_numbers', handleNoNumbers)
 
 
@@ -278,9 +279,9 @@ export default function Launcher() {
         socket.off('balance', handleBalance)
 
         socket.off('worker_status', handleWorkerStatus)
-        
+
         socket.off('account_summary', handleAccountSummary)
-        
+
         socket.off('no_numbers', handleNoNumbers)
 
       }
@@ -301,11 +302,11 @@ export default function Launcher() {
       // Handle balance - ensure it's a number or null
       const balanceValue = typeof response.data.balance === 'number' ? response.data.balance : null
       setBalance(balanceValue)
-      
+
       // Handle price - ensure it's a number or null
       const priceValue = typeof response.data.price === 'number' ? response.data.price : null
       setPrice(priceValue)
-      
+
       // Handle capacity - ensure it's a number or null
       const capacityValue = typeof response.data.capacity === 'number' ? response.data.capacity : null
       setCapacity(capacityValue)
@@ -396,23 +397,23 @@ export default function Launcher() {
       const content = res.data.content || ''
 
       const allLines = content.split('\n').filter((line) => line.trim() !== '')
-      
+
       // Transform technical logs into user-friendly messages
       const filteredLines = []
       let lastWasWaitingForOtp = false
       let lastWasRequestingNumber = false
       let inApiRequestBlock = false
-      
+
       for (let i = 0; i < allLines.length; i++) {
         const line = allLines[i]
         const trimmed = line.trim()
-        
+
         // Skip all API request detail blocks
         if (trimmed.includes('[CALLER API REQUEST]') || trimmed.includes('========================================================================')) {
           inApiRequestBlock = true
           continue
         }
-        
+
         if (inApiRequestBlock) {
           if (trimmed === '' || (trimmed.startsWith('[') && !trimmed.includes('CALLER API') && !trimmed.includes('INFO') && !trimmed.includes('ERROR') && !trimmed.includes('WARN'))) {
             inApiRequestBlock = false
@@ -420,25 +421,25 @@ export default function Launcher() {
             continue
           }
         }
-        
+
         // Skip all technical API details
-        if (trimmed.startsWith('URL:') || trimmed.startsWith('Action:') || trimmed.startsWith('Service:') || 
-            trimmed.startsWith('[CONFIG]') || trimmed.startsWith('Params:') || trimmed.startsWith('Full URL') ||
-            trimmed.startsWith('API Key:') || trimmed.startsWith('[OK] Status:') || trimmed.startsWith('Duration:') ||
-            trimmed.startsWith('Response Length:') || trimmed.startsWith('Response:') && !trimmed.match(/\[(INFO|ERROR|WARN|DEBUG)\]/) ||
-            trimmed.includes('Environment variables') || trimmed.includes('Updated API_KEY') || trimmed.includes('Updated BASE_URL') ||
-            trimmed.includes('Updated SERVICE') || trimmed.includes('Updated OPERATOR') || trimmed.includes('Updated COUNTRY') ||
-            trimmed.includes('Final caller configuration') || trimmed.includes('BASE_URL:') || trimmed.includes('SERVICE:') ||
-            trimmed.includes('OPERATOR:') || trimmed.includes('COUNTRY:') || trimmed.includes('WAIT_FOR_OTP:') ||
-            trimmed.includes('WAIT_FOR_SECOND_OTP:') || trimmed.includes('API_KEY:') || trimmed.includes('Signaling backend') ||
-            trimmed.includes('Backend stop response') || trimmed.includes('NUMBER_QUEUE') || trimmed.includes('Enqueued') ||
-            trimmed.includes('TIMEOUT] Signaling') || trimmed.includes('TIMEOUT] Backend stop')) {
+        if (trimmed.startsWith('URL:') || trimmed.startsWith('Action:') || trimmed.startsWith('Service:') ||
+          trimmed.startsWith('[CONFIG]') || trimmed.startsWith('Params:') || trimmed.startsWith('Full URL') ||
+          trimmed.startsWith('API Key:') || trimmed.startsWith('[OK] Status:') || trimmed.startsWith('Duration:') ||
+          trimmed.startsWith('Response Length:') || trimmed.startsWith('Response:') && !trimmed.match(/\[(INFO|ERROR|WARN|DEBUG)\]/) ||
+          trimmed.includes('Environment variables') || trimmed.includes('Updated API_KEY') || trimmed.includes('Updated BASE_URL') ||
+          trimmed.includes('Updated SERVICE') || trimmed.includes('Updated OPERATOR') || trimmed.includes('Updated COUNTRY') ||
+          trimmed.includes('Final caller configuration') || trimmed.includes('BASE_URL:') || trimmed.includes('SERVICE:') ||
+          trimmed.includes('OPERATOR:') || trimmed.includes('COUNTRY:') || trimmed.includes('WAIT_FOR_OTP:') ||
+          trimmed.includes('WAIT_FOR_SECOND_OTP:') || trimmed.includes('API_KEY:') || trimmed.includes('Signaling backend') ||
+          trimmed.includes('Backend stop response') || trimmed.includes('NUMBER_QUEUE') || trimmed.includes('Enqueued') ||
+          trimmed.includes('TIMEOUT] Signaling') || trimmed.includes('TIMEOUT] Backend stop')) {
           continue
         }
-        
+
         // Transform user-friendly messages
         let friendlyMessage = null
-        
+
         // Starting batch
         if (trimmed.includes('Starting new batch')) {
           friendlyMessage = '[INFO] Starting account creation...'
@@ -492,7 +493,7 @@ export default function Launcher() {
         }
         // Waiting for OTP / OTP received
         else if (trimmed.includes('getStatus') || trimmed.includes('get_otp') || trimmed.includes('STATUS_WAIT_CODE') ||
-                 trimmed.includes('Polling for OTP') || trimmed.includes('Fetching OTP')) {
+          trimmed.includes('Polling for OTP') || trimmed.includes('Fetching OTP')) {
           if (!lastWasWaitingForOtp) {
             friendlyMessage = '[INFO] Waiting for OTP...'
             lastWasWaitingForOtp = true
@@ -524,8 +525,8 @@ export default function Launcher() {
           friendlyMessage = '[WARN] Phone number already registered'
         }
         // Login successful / account created
-        else if (trimmed.includes('Recovery completed') || trimmed.includes('completed! Closing browser') || 
-                 trimmed.includes('Account created successfully') || trimmed.includes('Login successful')) {
+        else if (trimmed.includes('Recovery completed') || trimmed.includes('completed! Closing browser') ||
+          trimmed.includes('Account created successfully') || trimmed.includes('Login successful')) {
           friendlyMessage = '[INFO] Account created successfully!'
         }
         // Error messages
@@ -557,15 +558,15 @@ export default function Launcher() {
           continue
         }
         // Keep INFO, WARN, ERROR messages that aren't filtered above
-        else if (trimmed.match(/\[(INFO|WARN|ERROR)\]/) && !trimmed.includes('CALLER API') && 
-                 !trimmed.includes('Environment') && !trimmed.includes('CONFIG')) {
+        else if (trimmed.match(/\[(INFO|WARN|ERROR)\]/) && !trimmed.includes('CALLER API') &&
+          !trimmed.includes('Environment') && !trimmed.includes('CONFIG')) {
           friendlyMessage = trimmed
         }
         // Skip everything else that's technical
         else {
           continue
         }
-        
+
         if (friendlyMessage) {
           filteredLines.push(friendlyMessage)
         }
@@ -705,7 +706,7 @@ export default function Launcher() {
       playStartSound()
 
       setRunning(true)
-      
+
       // Refresh balance, price, capacity, and margin balance from backend
       // This will update the displayed values and hide skeleton loading
       console.log('[DEBUG] [Launcher] Refreshing balance and margin balance after start')
@@ -713,10 +714,10 @@ export default function Launcher() {
         loadBalance(),
         loadMarginBalance()
       ])
-      
+
       // Clear starting state after successful API call and data refresh
       setStarting(false)
-      
+
       setTimeout(() => {
         loadLatestLogs({ silent: true })
       }, 500)
@@ -741,7 +742,7 @@ export default function Launcher() {
       ])
 
       let msg = 'Failed to start account creation'
-      
+
       if (error.code === 'ECONNABORTED') {
         msg = 'Request timed out after 30 seconds. The backend may be slow or unresponsive. Please check the backend logs and try again.'
       } else if (error.response?.data?.error) {
@@ -819,6 +820,7 @@ export default function Launcher() {
         <StatusPopup
           type={popup.type}
           message={popup.message}
+          autoCloseMs={popup.autoCloseMs}
           onClose={() => setPopup({ type: null, message: '' })}
         />
       )}
@@ -971,9 +973,9 @@ export default function Launcher() {
 
         </div>
 
-        <button 
-          type="submit" 
-          disabled={running || starting || loading || capacity === null || marginBalance === null} 
+        <button
+          type="submit"
+          disabled={running || starting || loading || capacity === null || marginBalance === null}
           className={running || starting ? 'running' : ''}
         >
 
